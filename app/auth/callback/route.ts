@@ -1,5 +1,4 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
-import { cookies } from 'next/headers'
+import { createClient } from '@/lib/supabase' // ใช้ตัวนี้ตัวเดียวพอ
 import { NextResponse } from 'next/server'
 
 export async function GET(request: Request) {
@@ -8,31 +7,19 @@ export async function GET(request: Request) {
   const next = searchParams.get('next') ?? '/'
 
   if (code) {
-    const cookieStore = await cookies() // Note: await cookies() in Next.js 15+
+    // ใช้ฟังก์ชันที่เราสร้างไว้ใน lib/supabase.ts
+    // มันจัดการเรื่อง cookies() และ createServerClient ให้เรียบร้อยแล้ว
+    const supabase = await createClient() 
 
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value
-          },
-          set(name: string, value: string, options: CookieOptions) {
-            cookieStore.set({ name, value, ...options })
-          },
-          remove(name: string, options: CookieOptions) {
-            cookieStore.set({ name, value: '', ...options })
-          },
-        },
-      }
-    )
+    // แลกเปลี่ยนรหัส (Code) เป็น Session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
+    
     if (!error) {
+      // ตรวจสอบ origin และ redirect
       return NextResponse.redirect(`${origin}${next}`)
     }
   }
 
-  // Return the user to an error page with instructions
+  // ส่งผู้ใช้ไปยังหน้า Error หากเกิดความผิดพลาด
   return NextResponse.redirect(`${origin}/auth/auth-code-error`)
 }
