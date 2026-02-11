@@ -569,10 +569,10 @@ export default function CourseStructurePage() {
                   >
                     <option value="">-- เลือกครู --</option>
                     
-                    {/* 👇 ใช้ข้อมูลที่ Group แล้วมาแสดงผล และ Fix as any[] แล้ว */}
-                    {Object.entries(groupedTeachers).map(([dept, teachersInDept]) => (
+                    {/* 👇 ใช้ข้อมูลที่ Group แล้วมาแสดงผล และ Fix Type ตรงนี้ */}
+                    {Object.entries(groupedTeachers).map(([dept, teachersInDept]: [string, any[]]) => (
                       <optgroup key={dept} label={dept}>
-                        {(teachersInDept as any[]).map((t) => (
+                        {teachersInDept.map((t) => (
                           <option key={t.id} value={t.id}>
                             {getTeacherName(t)}
                           </option>
@@ -706,15 +706,24 @@ export default function CourseStructurePage() {
                 ยกเลิก
               </button>
               <button 
-                onClick={handleCloneCourses} 
-                className="px-5 py-2.5 text-sm font-medium bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 shadow-sm hover:shadow active:scale-95 transition"
+                onClick={handleCloneCourses}
+                disabled={loading}
+                className="px-5 py-2.5 text-sm font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 shadow-sm transition flex items-center gap-2"
               >
-                ✅ ยืนยันการคัดลอก
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  <>✅ ยืนยันการคัดลอก</>
+                )}
               </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }
