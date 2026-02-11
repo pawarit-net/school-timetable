@@ -27,7 +27,7 @@ export default function AdminDashboard() {
           </Link>
 
           {/* การ์ด 3: จัดการครู */}
-          <Link href="/admin/teachers" className="block group">
+          <Link href="/admin/manage-teachers" className="block group">
             <div className="bg-white p-8 rounded-xl shadow-md hover:shadow-xl transition-all border-l-8 border-green-500 h-full flex flex-col justify-center items-center text-center">
               <div className="text-6xl mb-4">👨‍🏫</div>
               <h2 className="text-2xl font-bold text-gray-800 group-hover:text-green-600">ข้อมูลครู</h2>

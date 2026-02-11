@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from '@/lib/supabase-client'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function Navbar() {
   const pathname = usePathname();

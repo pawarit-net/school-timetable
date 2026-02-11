@@ -1,16 +1,26 @@
 "use client";
 import { useState, useEffect } from "react";
-import { supabase } from '@/lib/supabase-client'
+import { supabase } from '@/lib/supabaseClient'
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+// ✅ 1. Interface กำหนดโครงสร้างข้อมูล
+interface Teacher {
+  id: number;
+  teacher_code: string;
+  full_name: string;
+  email: string;
+  department: string;
+  role: string;
+}
+
 export default function ManageTeachers() {
   const router = useRouter();
-  const [teachers, setTeachers] = useState<any[]>([]);
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loading, setLoading] = useState(false);
   
   // State สำหรับฟอร์ม
-  const [editingId, setEditingId] = useState<number | null>(null); // ✅ เก็บ ID ที่กำลังแก้ไข
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [teacherCode, setTeacherCode] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -26,7 +36,7 @@ export default function ManageTeachers() {
     if (data) setTeachers(data);
   }
 
-  // ✅ ฟังก์ชันจัดการ Submit (รวมทั้ง เพิ่มใหม่ และ บันทึกแก้ไข)
+  // ✅ ฟังก์ชันจัดการ Submit (เพิ่ม/แก้ไข)
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!teacherCode || !name || !email) return alert("กรุณากรอกรหัสประจำตัว, ชื่อ และอีเมล");
@@ -44,14 +54,14 @@ export default function ManageTeachers() {
     let error;
 
     if (editingId) {
-        // 🟡 กรณีแก้ไข (Update)
+        // กรณีแก้ไข (Update)
         const { error: updateError } = await supabase
             .from("teachers")
             .update(payload)
             .eq("id", editingId);
         error = updateError;
     } else {
-        // 🟢 กรณีเพิ่มใหม่ (Insert)
+        // กรณีเพิ่มใหม่ (Insert)
         const { error: insertError } = await supabase
             .from("teachers")
             .insert([payload]);
@@ -61,26 +71,23 @@ export default function ManageTeachers() {
     if (error) {
       alert("Error: " + error.message);
     } else {
-      resetForm(); // ล้างฟอร์ม
-      fetchTeachers(); // โหลดข้อมูลใหม่
+      resetForm();
+      fetchTeachers();
     }
     setLoading(false);
   }
 
-  // ✅ ฟังก์ชันเริ่มแก้ไข (ดึงข้อมูลมาใส่ฟอร์ม)
-  function startEdit(teacher: any) {
+  function startEdit(teacher: Teacher) {
     setEditingId(teacher.id);
     setTeacherCode(teacher.teacher_code || "");
     setName(teacher.full_name);
-    setEmail(teacher.email);
+    setEmail(teacher.email || "");
     setDepartment(teacher.department || "");
-    setRole(teacher.role);
+    setRole(teacher.role || "teacher");
     
-    // เลื่อนหน้าจอขึ้นไปที่ฟอร์ม
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // ✅ ฟังก์ชันล้างค่าในฟอร์ม
   function resetForm() {
     setEditingId(null);
     setTeacherCode(""); 
@@ -98,111 +105,144 @@ export default function ManageTeachers() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 text-black p-8">
+    <div className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8 font-sans">
       <div className="max-w-7xl mx-auto">
         
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold text-blue-900">👨‍🏫 จัดการบุคลากร (Teachers & Staff)</h1>
-          <Link href="/" className="bg-white border px-4 py-2 rounded-lg font-bold hover:bg-gray-100 transition">⬅️ กลับหน้าหลัก</Link>
+        {/* Header */}
+        <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+          <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+            👨‍🏫 จัดการบุคลากร (Teachers)
+          </h1>
+          <Link href="/" className="bg-white border border-slate-200 px-4 py-2 rounded-xl font-bold hover:bg-slate-50 transition shadow-sm text-sm text-slate-600 whitespace-nowrap">
+            ⬅️ กลับหน้าหลัก
+          </Link>
         </div>
 
         {/* ฟอร์มเพิ่ม/แก้ไขครู */}
-        {/* เปลี่ยนสีพื้นหลังถ้ากำลังแก้ไข */}
-        <form onSubmit={handleSubmit} className={`grid grid-cols-1 md:grid-cols-6 gap-4 mb-8 p-6 rounded-2xl shadow-sm border items-end transition-colors ${editingId ? 'bg-yellow-50 border-yellow-200' : 'bg-white'}`}>
+        <form onSubmit={handleSubmit} className={`grid grid-cols-1 md:grid-cols-6 gap-4 mb-8 p-6 rounded-2xl shadow-sm border items-end transition-all ${editingId ? 'bg-amber-50 border-amber-200 ring-2 ring-amber-100' : 'bg-white border-slate-200'}`}>
           
           <div>
-            <label className="text-xs font-bold text-gray-400 block mb-1">รหัสประจำตัว</label>
+            <label className="text-xs font-bold text-slate-500 block mb-1">รหัสประจำตัว</label>
             <input 
                 type="text" 
-                className="w-full border p-3 rounded-xl bg-gray-50 focus:bg-white outline-none font-mono font-bold text-blue-800" 
-                placeholder="เช่น T001"
+                className="w-full border border-slate-200 p-3 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-mono font-bold text-indigo-700" 
+                placeholder="T001"
                 value={teacherCode} 
                 onChange={(e) => setTeacherCode(e.target.value)} 
                 required 
             />
           </div>
 
-          <div>
-            <label className="text-xs font-bold text-gray-400 block mb-1">ชื่อ-นามสกุล</label>
-            <input type="text" className="w-full border p-3 rounded-xl bg-gray-50 focus:bg-white outline-none" value={name} onChange={(e) => setName(e.target.value)} required />
+          <div className="md:col-span-2">
+            <label className="text-xs font-bold text-slate-500 block mb-1">ชื่อ-นามสกุล</label>
+            <input type="text" className="w-full border border-slate-200 p-3 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={name} onChange={(e) => setName(e.target.value)} required />
           </div>
           
           <div>
-            <label className="text-xs font-bold text-gray-400 block mb-1">อีเมล (Username)</label>
-            <input type="email" className="w-full border p-3 rounded-xl bg-gray-50 focus:bg-white outline-none" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <label className="text-xs font-bold text-slate-500 block mb-1">อีเมล</label>
+            <input type="email" className="w-full border border-slate-200 p-3 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={email} onChange={(e) => setEmail(e.target.value)} required />
           </div>
           
           <div>
-            <label className="text-xs font-bold text-gray-400 block mb-1">หมวด/แผนก</label>
-            <input type="text" className="w-full border p-3 rounded-xl bg-gray-50 focus:bg-white outline-none" placeholder="เช่น ภาษาไทย" value={department} onChange={(e) => setDepartment(e.target.value)} />
+            <label className="text-xs font-bold text-slate-500 block mb-1">หมวด/แผนก</label>
+            <input type="text" className="w-full border border-slate-200 p-3 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="เช่น ภาษาไทย" value={department} onChange={(e) => setDepartment(e.target.value)} />
           </div>
           
           <div>
-            <label className="text-xs font-bold text-gray-400 block mb-1">สิทธิ์</label>
-            <select className="w-full border p-3 rounded-xl bg-gray-50 focus:bg-white outline-none" value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="teacher">Teacher</option>
-              <option value="admin">Admin</option>
+            <label className="text-xs font-bold text-slate-500 block mb-1">สิทธิ์การใช้งาน</label>
+            <select 
+                className="w-full border border-slate-200 p-3 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" 
+                value={role} 
+                onChange={(e) => setRole(e.target.value)}
+            >
+              <option value="teacher">👨‍🏫 Teacher</option>
+              <option value="admin">👑 Admin</option>
             </select>
           </div>
           
-          <div className="flex gap-2">
-            {/* ปุ่ม Submit เปลี่ยนข้อความตามสถานะ */}
-            <button disabled={loading} className={`w-full py-3 rounded-xl font-bold shadow-md transition active:scale-95 text-white ${editingId ? 'bg-yellow-500 hover:bg-yellow-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
-              {loading ? "..." : (editingId ? "💾 บันทึก" : "+ เพิ่ม")}
+          <div className="md:col-span-6 flex gap-2 pt-2">
+            <button disabled={loading} className={`flex-1 py-3 rounded-xl font-bold shadow-sm transition active:scale-95 text-white ${editingId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+              {loading ? "..." : (editingId ? "💾 บันทึกการแก้ไข" : "+ เพิ่มรายชื่อใหม่")}
             </button>
             
-            {/* ปุ่มยกเลิก แสดงเฉพาะตอนแก้ไข */}
             {editingId && (
-                <button type="button" onClick={resetForm} className="bg-gray-200 hover:bg-gray-300 text-gray-600 px-3 rounded-xl font-bold transition">
-                    ❌
+                <button type="button" onClick={resetForm} className="bg-slate-200 hover:bg-slate-300 text-slate-600 px-6 rounded-xl font-bold transition">
+                    ยกเลิก
                 </button>
             )}
           </div>
         </form>
 
-        {/* ตารางแสดงผล */}
-        <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-100 text-left">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase">รหัส</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase">ชื่อ-นามสกุล</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase">อีเมล</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase">หมวด</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase">สิทธิ์</th>
-                <th className="px-6 py-4 text-center text-xs font-bold text-gray-400 uppercase">จัดการ</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {teachers.map((t) => (
-                // ไฮไลท์แถวที่กำลังแก้ไข
-                <tr key={t.id} className={`transition ${editingId === t.id ? 'bg-yellow-50' : 'hover:bg-blue-50/30'}`}>
-                  <td className="px-6 py-4 font-mono font-bold text-blue-600">{t.teacher_code || "-"}</td>
-                  <td className="px-6 py-4 font-bold text-gray-700">{t.full_name}</td>
-                  <td className="px-6 py-4 text-sm text-gray-500">{t.email}</td>
-                  <td className="px-6 py-4 text-sm text-blue-600 font-medium">{t.department || "-"}</td>
-                  <td className="px-6 py-4">
-                    <span className={`px-3 py-1 rounded-lg text-xs font-bold border ${t.role === 'admin' ? 'bg-purple-100 text-purple-600 border-purple-200' : 'bg-green-100 text-green-600 border-green-200'}`}>
-                      {t.role === 'admin' ? 'Admin' : 'Teacher'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-center flex justify-center gap-2">
-                    {/* ปุ่มแก้ไข */}
-                    <button onClick={() => startEdit(t)} className="bg-yellow-100 hover:bg-yellow-200 text-yellow-700 p-2 rounded-lg font-bold transition text-xs">
-                        ✏️ แก้ไข
-                    </button>
-                    {/* ปุ่มลบ */}
-                    <button onClick={() => deleteTeacher(t.id)} className="bg-red-50 hover:bg-red-100 text-red-500 p-2 rounded-lg font-bold transition text-xs">
-                        🗑️ ลบ
-                    </button>
-                  </td>
+        {/* ✅ ตารางแสดงผล (ปรับปรุงใหม่: Text Badge + Scrollable) */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          
+          {/* div ตัวนี้ช่วยให้ตารางเลื่อนซ้ายขวาได้ ไม่ล้นจอ */}
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-100 text-left">
+                <thead className="bg-slate-50">
+                <tr>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase whitespace-nowrap">รหัส</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase whitespace-nowrap">ชื่อ-นามสกุล</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase whitespace-nowrap">อีเมล</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase whitespace-nowrap">หมวด</th>
+                    <th className="px-6 py-4 text-center text-xs font-bold text-slate-500 uppercase whitespace-nowrap">สิทธิ์</th>
+                    <th className="px-6 py-4 text-center text-xs font-bold text-slate-500 uppercase whitespace-nowrap">จัดการ</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                {teachers.map((t) => (
+                    <tr key={t.id} className={`transition ${editingId === t.id ? 'bg-amber-50' : 'hover:bg-slate-50/80'}`}>
+                        
+                        <td className="px-6 py-4 font-mono font-bold text-indigo-600 whitespace-nowrap">
+                            {t.teacher_code || "-"}
+                        </td>
+                        
+                        <td className="px-6 py-4 font-medium text-slate-800 whitespace-nowrap">
+                            {t.full_name}
+                        </td>
+                        
+                        <td className="px-6 py-4 text-sm text-slate-500 whitespace-nowrap">
+                            {t.email}
+                        </td>
+                        
+                        <td className="px-6 py-4 text-sm text-slate-600 font-medium whitespace-nowrap">
+                            <span className="bg-slate-100 px-2 py-1 rounded text-xs">{t.department || "ทั่วไป"}</span>
+                        </td>
+                        
+                        {/* ✅ แสดงป้ายข้อความ Admin/Teacher ตรงกลาง */}
+                        <td className="px-6 py-4 text-center whitespace-nowrap">
+                            {t.role === 'admin' ? (
+                                <span className="inline-block min-w-[100px] bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold border border-purple-200 shadow-sm">
+                                    👑 Admin
+                                </span>
+                            ) : (
+                                <span className="inline-block min-w-[100px] bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold border border-green-200 shadow-sm">
+                                    👨‍🏫 Teacher
+                                </span>
+                            )}
+                        </td>
+
+                        <td className="px-6 py-4 text-center whitespace-nowrap">
+                            <div className="flex justify-center gap-2">
+                                <button onClick={() => startEdit(t)} className="bg-amber-100 hover:bg-amber-200 text-amber-700 p-2 rounded-lg font-bold transition text-xs flex items-center gap-1">
+                                    ✏️ <span className="hidden lg:inline">แก้ไข</span>
+                                </button>
+                                <button onClick={() => deleteTeacher(t.id)} className="bg-red-50 hover:bg-red-100 text-red-500 p-2 rounded-lg font-bold transition text-xs flex items-center gap-1">
+                                    🗑️ <span className="hidden lg:inline">ลบ</span>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                ))}
+                </tbody>
+            </table>
+          </div>
           
           {teachers.length === 0 && (
-             <div className="text-center py-10 text-gray-400">ยังไม่มีข้อมูลบุคลากร</div>
+             <div className="text-center py-12 text-slate-400">
+                <p className="text-4xl mb-2">📭</p>
+                <p>ยังไม่มีข้อมูลบุคลากร</p>
+             </div>
           )}
         </div>
       </div>
