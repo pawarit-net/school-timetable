@@ -1,18 +1,38 @@
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 
 export async function GET(request: Request) {
-  const requestUrl = new URL(request.url)
-  const code = requestUrl.searchParams.get('code')
+  const { searchParams, origin } = new URL(request.url)
+  const code = searchParams.get('code')
+  const next = searchParams.get('next') ?? '/'
 
   if (code) {
-    const cookieStore = cookies()
-    const supabase = createRouteHandlerClient({ cookies: () => cookieStore })
-    // แลกเปลี่ยนรหัสจาก Google เป็น Session เพื่อให้ล็อกอินสำเร็จ
-    await supabase.auth.exchangeCodeForSession(code)
+    const cookieStore = await cookies() // Note: await cookies() in Next.js 15+
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+          set(name: string, value: string, options: CookieOptions) {
+            cookieStore.set({ name, value, ...options })
+          },
+          remove(name: string, options: CookieOptions) {
+            cookieStore.set({ name, value: '', ...options })
+          },
+        },
+      }
+    )
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`)
+    }
   }
 
-  // ล็อกอินเสร็จแล้ว ให้เด้งกลับไปหน้าหลัก
-  return NextResponse.redirect(new URL('/', request.url))
+  // Return the user to an error page with instructions
+  return NextResponse.redirect(`${origin}/auth/auth-code-error`)
 }

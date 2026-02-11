@@ -3,15 +3,36 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 
+// Define Interfaces เพื่อให้ Code อ่านง่ายและปลอดภัยขึ้น
+interface TimeSlot {
+  id: number | string;
+  label: string;
+  time: string;
+  isBreak?: boolean;
+}
+
+interface ScheduleItem {
+  id?: number;
+  day_of_week: string;
+  slot_id: number;
+  subject_id: string;
+  teacher_id?: string;
+  is_locked?: boolean;
+  subjects?: { code: string; name: string };
+  teachers?: { full_name: string; department: string };
+  major_group?: string;
+}
+
 export default function ManageAssignments() {
-  // --- State เดิม ---
+  // --- State ---
   const [selectedRoom, setSelectedRoom] = useState("");
   const [classrooms, setClassrooms] = useState<any[]>([]);
   const [subjects, setSubjects] = useState<any[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
-  const [scheduleData, setScheduleData] = useState<any[]>([]);
+  const [scheduleData, setScheduleData] = useState<ScheduleItem[]>([]);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // ✅ เพิ่ม Loading State
   const [activeSlot, setActiveSlot] = useState<{day: string, slotId: number} | null>(null);
   
   const [formData, setFormData] = useState({
@@ -21,11 +42,10 @@ export default function ManageAssignments() {
     is_locked: true
   });
 
-  // --- State ใหม่ (สำหรับปีการศึกษา) ---
   const [termInfo, setTermInfo] = useState({ year: "2567", semester: "1" });
 
   const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
-  const timeSlots = [
+  const timeSlots: TimeSlot[] = [
     { id: 1, label: "คาบ 1", time: "08:30 - 09:20" },
     { id: 2, label: "คาบ 2", time: "09:20 - 10:10" },
     { id: "p1", label: "พัก", time: "10:10 - 10:25", isBreak: true },
@@ -42,37 +62,35 @@ export default function ManageAssignments() {
     loadInitialData();
   }, []);
 
-  // เมื่อเปลี่ยนห้อง หรือ โหลดข้อมูลปีการศึกษาเสร็จ ให้โหลดตารางใหม่
   useEffect(() => {
     if (selectedRoom && termInfo.year) fetchSchedule();
   }, [selectedRoom, termInfo]);
 
   async function loadInitialData() {
-    // 1. ดึงข้อมูลปีการศึกษาก่อน
-    const { data: settings } = await supabase
-      .from("academic_settings")
-      .select("*")
-      .single();
-    
-    if (settings) {
-      setTermInfo({
-        year: settings.year?.toString() || "2567",
-        semester: settings.semester || "1"
-      });
-    }
+    try {
+      const { data: settings } = await supabase.from("academic_settings").select("*").single();
+      if (settings) {
+        setTermInfo({
+          year: settings.year?.toString() || "2567",
+          semester: settings.semester || "1"
+        });
+      }
 
-    // 2. ดึงข้อมูลพื้นฐานอื่น ๆ
-    const { data: rooms } = await supabase.from("classrooms").select("*").order('name');
-    const { data: subs } = await supabase.from("subjects").select("*").order('code');
-    const { data: tchs } = await supabase.from("teachers").select("*").order('full_name');
-    
-    if (rooms) setClassrooms(rooms);
-    if (subs) setSubjects(subs);
-    if (tchs) setTeachers(tchs);
+      const { data: rooms } = await supabase.from("classrooms").select("*").order('name');
+      const { data: subs } = await supabase.from("subjects").select("*").order('code');
+      const { data: tchs } = await supabase.from("teachers").select("*").order('full_name');
+      
+      if (rooms) setClassrooms(rooms);
+      if (subs) setSubjects(subs);
+      if (tchs) setTeachers(tchs);
+    } catch (error) {
+      console.error("Error loading initial data:", error);
+    }
   }
 
   async function fetchSchedule() {
-    if (!termInfo.year) return; // ถ้ายังไม่รู้ปีการศึกษา อย่าเพิ่งโหลด
+    if (!termInfo.year || !selectedRoom) return;
+    setIsLoading(true);
 
     const { data, error } = await supabase
       .from("teaching_assignments")
@@ -82,18 +100,19 @@ export default function ManageAssignments() {
         teachers(full_name, department)
       `)
       .eq("classroom_id", selectedRoom)
-      .eq("academic_year", termInfo.year) // กรองปี
-      .eq("semester", termInfo.semester); // กรองเทอม (ใช้ semester ตามเดิม)
+      .eq("academic_year", termInfo.year)
+      .eq("semester", termInfo.semester);
     
+    setIsLoading(false);
     if (error) console.error("Error fetching schedule:", error);
     if (data) setScheduleData(data);
   }
 
-  // --- ฟังก์ชันล้างตารางสอน ---
   async function handleClearSchedule() {
     if (!selectedRoom) return alert("กรุณาเลือกห้องเรียนก่อน!");
     if (!confirm(`⚠️ คุณแน่ใจไหมที่จะลบคาบเรียนที่ไม่ได้ 'ล็อก' ทั้งหมดของห้องนี้?\n(ปี ${termInfo.year} เทอม ${termInfo.semester})`)) return;
 
+    setIsLoading(true);
     const { error } = await supabase
       .from("teaching_assignments")
       .delete()
@@ -105,104 +124,116 @@ export default function ManageAssignments() {
     if (error) {
       alert("ไม่สามารถล้างตารางได้: " + error.message);
     } else {
-      alert("ล้างตารางเรียบร้อยแล้ว");
-      fetchSchedule();
+      await fetchSchedule(); // โหลดข้อมูลใหม่
     }
+    setIsLoading(false);
   }
 
-  // --- ระบบจัดตารางอัตโนมัติ (แก้ไขใหม่ ให้ตรง DB) ---
+  // --- ระบบจัดตารางอัตโนมัติ (Modified) ---
   async function handleAutoSchedule() {
     if (!selectedRoom) return alert("กรุณาเลือกห้องเรียนก่อน!");
     if (!confirm(`ระบบจะเติมวิชาตามแผนการเรียน ปี ${termInfo.year} เทอม ${termInfo.semester} ยืนยันหรือไม่?`)) return;
 
+    setIsLoading(true);
     console.log("🔍 เริ่มต้นจัดตารางอัตโนมัติ...");
 
-    // ✅ จุดที่แก้ไข: ดึงจาก course_structures และใช้ column "term"
+    // 1. ดึงแผนการเรียน
     const { data: reqs, error } = await supabase
       .from("course_structures") 
       .select("*")
       .eq("classroom_id", selectedRoom)
       .eq("academic_year", termInfo.year)
-      .eq("term", termInfo.semester); // <-- ใช้ term ตามรูปภาพ DB ของคุณ
+      .eq("term", termInfo.semester);
 
     if (error) {
-        console.error("❌ Error fetching course_structures:", error);
+        setIsLoading(false);
         alert("เกิดข้อผิดพลาดฐานข้อมูล: " + error.message);
         return;
     }
 
     if (!reqs || reqs.length === 0) {
-      alert(`ไม่พบแผนการเรียน (Course Structure) ของห้องนี้!\nระบบค้นหา: ปี ${termInfo.year} เทอม ${termInfo.semester}\nกรุณาไปเพิ่มข้อมูลที่เมนู "โครงสร้างรายวิชา" ก่อน`);
+      setIsLoading(false);
+      alert(`ไม่พบแผนการเรียน (Course Structure) ของห้องนี้!`);
       return;
     }
 
-    console.log(`✅ พบแผนการเรียน ${reqs.length} วิชา, กำลังประมวลผล...`);
-
+    // ✅ ใช้ตัวแปร Local แทน State เพื่อความถูกต้องในการคำนวณ Loop เดียว
+    let tempSchedule = [...scheduleData]; 
     let assignedCount = 0;
 
     for (const req of reqs) {
-      // นับจำนวนคาบที่มีอยู่แล้วในเทอมนี้
-      const alreadyAssigned = scheduleData.filter(s => s.subject_id === req.subject_id).length;
+      // นับจาก tempSchedule (รวมที่เพิ่งเติมเข้าไปด้วย)
+      const alreadyAssigned = tempSchedule.filter(s => s.subject_id === req.subject_id).length;
       let periodsToFill = req.periods_per_week - alreadyAssigned;
 
       if (periodsToFill <= 0) continue;
 
       for (const day of days) {
+        if (periodsToFill <= 0) break; // ถ้าครบแล้ว หยุด loop วันทันที
+
         for (const slot of timeSlots) {
           if (slot.isBreak || periodsToFill <= 0) continue;
 
-          // เช็คว่าห้องนี้ว่างไหม
-          const isOccupied = scheduleData.some(s => s.day_of_week === day && s.slot_id === slot.id);
+          const slotIdNum = Number(slot.id);
+
+          // เช็คว่าห้องนี้ว่างไหม (เช็คจาก tempSchedule)
+          const isOccupied = tempSchedule.some(s => s.day_of_week === day && s.slot_id === slotIdNum);
           if (isOccupied) continue;
 
-          // เช็คครูติดสอนไหม (Conflict Check)
+          // เช็คครูติดสอนไหม (Conflict Check - อันนี้ยังต้องยิง DB)
+          // หมายเหตุ: การยิง DB ใน Loop อาจช้า ถ้าข้อมูลเยอะควรดึงตารางสอนครูมาแคชไว้ก่อน
           const { data: conflict } = await supabase
             .from("teaching_assignments")
             .select("id")
             .eq("teacher_id", req.teacher_id)
             .eq("day_of_week", day)
-            .eq("slot_id", slot.id)
+            .eq("slot_id", slotIdNum)
             .eq("academic_year", termInfo.year)
-            .eq("semester", termInfo.semester) // เช็ค Conflict ยังคงใช้ semester ตามตาราง assignments
+            .eq("semester", termInfo.semester)
             .maybeSingle();
 
           if (conflict) continue;
 
-          // Insert ลง teaching_assignments
-          await supabase.from("teaching_assignments").insert([{
+          // เตรียมข้อมูล Insert
+          const newAssignment = {
             classroom_id: selectedRoom,
             subject_id: req.subject_id,
             teacher_id: req.teacher_id,
             day_of_week: day,
-            slot_id: slot.id,
+            slot_id: slotIdNum,
             major_group: req.major_group || "ทั้งหมด",
             is_locked: false,
             academic_year: termInfo.year,
             semester: termInfo.semester   
-          }]);
+          };
+
+          // Insert ลง teaching_assignments
+          await supabase.from("teaching_assignments").insert([newAssignment]);
 
           assignedCount++;
           periodsToFill--;
           
-          // อัปเดต state ชั่วคราว
-          scheduleData.push({ 
-             day_of_week: day, 
-             slot_id: slot.id, 
-             subject_id: req.subject_id 
-          });
+          // ✅ อัปเดต tempSchedule เพื่อให้วิชาถัดไปใน Loop รู้ว่าตรงนี้ไม่ว่างแล้ว
+          tempSchedule.push({
+             ...newAssignment,
+             // ใส่ Mock data เพื่อให้ filter ทำงานได้ถูกต้องโดยไม่ต้อง fetch ใหม่ทุกรอบ
+             id: -1, // dummy id
+          } as ScheduleItem);
         }
       }
     }
+
+    setIsLoading(false);
     alert(`จัดตารางอัตโนมัติเสร็จสิ้น! (เพิ่ม ${assignedCount} คาบ)`);
     fetchSchedule();
   }
 
-  // --- ฟังก์ชันบันทึกข้อมูล ---
   async function handleSave() {
     if (!formData.subject_id || !formData.teacher_id) {
       alert("กรุณาเลือกวิชาและครูผู้สอน");
       return;
     }
+    setIsLoading(true);
 
     // เช็ค Conflict ครู
     const { data: conflict } = await supabase
@@ -216,11 +247,16 @@ export default function ManageAssignments() {
       .maybeSingle();
 
     if (conflict) {
-      alert(`❌ ไม่สามารถจัดได้! ครูท่านนี้มีสอนที่ "ห้อง ${conflict.classrooms?.name}" ในคาบนี้แล้ว`);
+      setIsLoading(false);
+      // ✅ Handle classrooms relation correctly (Supabase can return obj or array)
+      const classroomName = Array.isArray(conflict.classrooms) 
+        ? conflict.classrooms[0]?.name 
+        : (conflict.classrooms as any)?.name;
+
+      alert(`❌ ไม่สามารถจัดได้! ครูท่านนี้มีสอนที่ "ห้อง ${classroomName || 'อื่น'}" ในคาบนี้แล้ว`);
       return;
     }
 
-    // บันทึกข้อมูล
     const { error } = await supabase.from("teaching_assignments").insert([{
       classroom_id: selectedRoom,
       subject_id: formData.subject_id,
@@ -233,6 +269,8 @@ export default function ManageAssignments() {
       semester: termInfo.semester   
     }]);
 
+    setIsLoading(false);
+
     if (error) {
       alert("บันทึกไม่สำเร็จ: " + error.message);
     } else {
@@ -244,8 +282,10 @@ export default function ManageAssignments() {
 
   async function handleDelete(id: number) {
     if (confirm("ต้องการลบคาบเรียนนี้ใช่ไหม?")) {
+      setIsLoading(true);
       await supabase.from("teaching_assignments").delete().eq("id", id);
       fetchSchedule();
+      // ไม่ต้อง set false เพราะ fetchSchedule จะทำให้อยู่แล้ว
     }
   }
 
@@ -253,6 +293,16 @@ export default function ManageAssignments() {
     <div className="min-h-screen bg-white p-8 text-black pb-20">
       <div className="max-w-7xl mx-auto">
         
+        {/* Loading Overlay */}
+        {isLoading && (
+          <div className="fixed inset-0 bg-white/50 z-[60] flex items-center justify-center backdrop-blur-[2px]">
+            <div className="bg-white p-4 rounded-xl shadow-lg border flex items-center gap-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+              <span className="font-bold text-blue-900">กำลังประมวลผล...</span>
+            </div>
+          </div>
+        )}
+
         {/* Header Section */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
           <div>
@@ -263,7 +313,6 @@ export default function ManageAssignments() {
           </div>
 
           <div className="flex flex-col md:flex-row gap-3 items-end md:items-center">
-             {/* Year/Term Badge */}
              <div className="bg-indigo-50 px-5 py-2 rounded-full border border-indigo-100 flex items-center gap-3 shadow-sm">
                 <div className="flex flex-col items-end leading-tight">
                    <span className="text-[10px] uppercase text-indigo-400 font-bold tracking-wider">ปีการศึกษา</span>
@@ -299,13 +348,15 @@ export default function ManageAssignments() {
           <div className="flex gap-2">
             <button 
               onClick={handleClearSchedule}
-              className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold border border-red-200 hover:bg-red-100 transition shadow-sm flex items-center gap-2"
+              disabled={isLoading || !selectedRoom}
+              className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold border border-red-200 hover:bg-red-100 transition shadow-sm flex items-center gap-2 disabled:opacity-50"
             >
               🗑️ ล้างตาราง
             </button>
             <button 
               onClick={handleAutoSchedule}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700 transition shadow-md flex items-center gap-2"
+              disabled={isLoading || !selectedRoom}
+              className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-green-700 transition shadow-md flex items-center gap-2 disabled:opacity-50"
             >
               🤖 จัดอัตโนมัติ
             </button>
@@ -335,13 +386,14 @@ export default function ManageAssignments() {
                         {timeSlots.map(slot => {
                           if (slot.isBreak) return <td key={slot.id} className="bg-gray-50 border-r text-[10px] text-gray-400 text-center italic">พัก</td>;
                           
-                          const matches = scheduleData.filter(a => a.day_of_week === day && a.slot_id === slot.id);
+                          const slotIdNum = Number(slot.id);
+                          const matches = scheduleData.filter(a => a.day_of_week === day && a.slot_id === slotIdNum);
 
                           return (
                             <td 
                               key={slot.id} 
                               className="border-r p-1 h-28 relative hover:bg-blue-50/50 transition cursor-pointer group align-top"
-                              onClick={() => { setActiveSlot({day, slotId: Number(slot.id)}); setIsModalOpen(true); }}
+                              onClick={() => { setActiveSlot({day, slotId: slotIdNum}); setIsModalOpen(true); }}
                             >
                               {matches.length > 0 ? (
                                 <div className="space-y-1 h-full w-full">
@@ -349,7 +401,7 @@ export default function ManageAssignments() {
                                     <div key={m.id} className={`p-1.5 rounded-lg border shadow-sm relative ${m.is_locked ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'}`}>
                                       <div className="flex justify-between items-start mb-1">
                                         <span className="font-bold text-blue-900 text-[10px] leading-tight block truncate w-[85%]">{m.subjects?.code} {m.subjects?.name}</span>
-                                        <button onClick={(e) => {e.stopPropagation(); handleDelete(m.id)}} className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 transition absolute top-1 right-1 z-10 bg-white/50 rounded-full p-0.5">
+                                        <button onClick={(e) => {e.stopPropagation(); if(m.id) handleDelete(m.id);}} className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 transition absolute top-1 right-1 z-10 bg-white/50 rounded-full p-0.5">
                                           <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                           </svg>
@@ -408,7 +460,7 @@ export default function ManageAssignments() {
               </div>
               <div className="grid grid-cols-2 gap-3 mt-8">
                 <button onClick={() => setIsModalOpen(false)} className="py-3 font-bold text-gray-400 hover:text-gray-600 transition">ยกเลิก</button>
-                <button onClick={handleSave} className="bg-blue-600 text-white py-3 rounded-2xl font-bold hover:bg-blue-700 shadow-lg transition active:scale-95">บันทึกลงตาราง</button>
+                <button onClick={handleSave} disabled={isLoading} className="bg-blue-600 text-white py-3 rounded-2xl font-bold hover:bg-blue-700 shadow-lg transition active:scale-95 disabled:opacity-50">บันทึกลงตาราง</button>
               </div>
             </div>
           </div>

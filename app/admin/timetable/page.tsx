@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import Link from 'next/link' // เพิ่ม Link เข้ามา
+import Link from 'next/link'
 
+// 1. สร้าง Client Supabase
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -11,7 +12,15 @@ const supabase = createClient(
 
 const DAYS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์']
 
-const TIMELINE = [
+// 2. กำหนด Type ให้ชัดเจน เพื่อแก้ปัญหา TypeScript
+type TimelineItem = {
+  type: 'period' | 'break';
+  id?: number; // id เป็น optional เพราะ 'break' ไม่มี id
+  time: string;
+  label?: string;
+}
+
+const TIMELINE: TimelineItem[] = [
   { type: 'period', id: 1, time: '08:30-09:20' },
   { type: 'period', id: 2, time: '09:20-10:10' },
   { type: 'break',  label: 'พัก', time: '10:10-10:25' },
@@ -127,7 +136,7 @@ export default function TimetableScheduler() {
   return (
     <div className="min-h-screen bg-slate-100 p-4 font-sans relative">
       
-      {/* --- Header (เพิ่มปุ่มย้อนกลับตรงนี้) --- */}
+      {/* --- Header --- */}
       <div className="max-w-[1400px] mx-auto bg-white p-4 rounded-lg shadow-md mb-6 flex justify-between items-center sticky top-0 z-20">
         <div className="flex items-center gap-4">
           <Link 
@@ -169,13 +178,20 @@ export default function TimetableScheduler() {
               <tr key={day} className="border-b">
                 <td className="p-4 font-bold bg-slate-100 sticky left-0 z-10">{day}</td>
                 {TIMELINE.map((slot, index) => {
-                  if (slot.type === 'break') return <td key={index} className="bg-slate-200"></td>
-                  const data = getSlotData(day, slot.id)
+                  // FIX: เช็คให้แน่ใจว่าถ้าเป็น break หรือไม่มี id ให้แสดงช่องว่าง
+                  if (slot.type === 'break' || !slot.id) {
+                    return <td key={index} className="bg-slate-200"></td>
+                  }
+                  
+                  // ดึงข้อมูลโดยใช้ ID ที่มั่นใจว่ามีค่าแล้ว
+                  const data = getSlotData(day, slot.id!)
+
                   return (
                     <td key={index} className="p-1 border-l relative h-32 align-top">
                       {data ? (
                         <div className="bg-blue-50 border border-blue-200 rounded p-2 h-full text-left relative group">
                           <button onClick={() => handleDelete(data.id)} className="absolute top-1 right-1 text-red-400 opacity-0 group-hover:opacity-100 font-bold">×</button>
+                          {/* ใช้ ?. เพื่อป้องกัน error ถ้า data มาไม่ครบ */}
                           <div className="font-bold text-blue-800 text-sm">{data.subjects?.code}</div>
                           <div className="text-xs text-slate-600 mb-1 line-clamp-2">{data.subjects?.name}</div>
                           <div className="text-xs text-slate-500 bg-white inline-block px-1 rounded border max-w-full truncate">
@@ -183,7 +199,7 @@ export default function TimetableScheduler() {
                           </div>
                         </div>
                       ) : (
-                        <button onClick={() => openAddModal(day, slot.id)} className="w-full h-full text-transparent hover:text-gray-400 hover:bg-gray-50 text-2xl">+</button>
+                        <button onClick={() => openAddModal(day, slot.id!)} className="w-full h-full text-transparent hover:text-gray-400 hover:bg-gray-50 text-2xl">+</button>
                       )}
                     </td>
                   )

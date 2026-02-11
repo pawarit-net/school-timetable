@@ -43,7 +43,6 @@ export default function CourseStructurePage() {
       
       const reqClassrooms = supabase.from("classrooms").select("*").order('id');
       const reqSubjects = supabase.from("subjects").select("*").order('code');
-      // ดึงข้อมูลครู (มั่นใจว่ามี field department หรือหมวดวิชามาด้วย จาก select *)
       const reqTeachers = supabase.from("teachers").select("*").order('id');
       const reqMajorGroups = supabase.from("major_groups").select("*").order('id');
       
@@ -320,8 +319,8 @@ export default function CourseStructurePage() {
       }
       acc[dept].push(teacher);
       return acc;
-    }, {} as Record<string, typeof teachers[0]>[]);
-  }, [teachers]); // ใช้ useMemo เพื่อไม่ให้คำนวณใหม่ทุกครั้งที่ render
+    }, {} as Record<string, any[]>);
+  }, [teachers]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 md:p-10 font-sans text-slate-800">
@@ -385,7 +384,6 @@ export default function CourseStructurePage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-100">
-                {/* 🔴 [FIX 1] ลบช่องว่างระหว่าง thead และ tr เพื่อแก้ Hydration Error */}
                 <thead className="bg-slate-50/80"><tr>
                     <th className="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">ปี/เทอม</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">ห้องเรียน</th>
@@ -429,7 +427,6 @@ export default function CourseStructurePage() {
                             )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                          {/* 🔴 [FIX 2] เพิ่ม index และแก้ key เพื่อป้องกัน error key ซ้ำ */}
                           {course.course_teachers?.map((ct: any, index: number) => (
                             <div key={`${ct.id}-${index}`} className="flex items-center gap-2 mb-1">
                               <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-xs text-indigo-700 font-bold">
@@ -572,10 +569,10 @@ export default function CourseStructurePage() {
                   >
                     <option value="">-- เลือกครู --</option>
                     
-                    {/* 👇 ใช้ข้อมูลที่ Group แล้วมาแสดงผล */}
+                    {/* 👇 ใช้ข้อมูลที่ Group แล้วมาแสดงผล และ Fix as any[] แล้ว */}
                     {Object.entries(groupedTeachers).map(([dept, teachersInDept]) => (
                       <optgroup key={dept} label={dept}>
-                        {teachersInDept.map((t) => (
+                        {(teachersInDept as any[]).map((t) => (
                           <option key={t.id} value={t.id}>
                             {getTeacherName(t)}
                           </option>
@@ -700,13 +697,19 @@ export default function CourseStructurePage() {
               </div>
             </div>
 
+            {/* ✅ ส่วนที่เติมให้ครบถ้วน */}
             <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3 border-t border-slate-100">
-              <button onClick={() => setShowCloneModal(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg">ยกเลิก</button>
               <button 
-                onClick={handleCloneCourses}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                onClick={() => setShowCloneModal(false)} 
+                className="px-5 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition"
               >
-                คัดลอกข้อมูล
+                ยกเลิก
+              </button>
+              <button 
+                onClick={handleCloneCourses} 
+                className="px-5 py-2.5 text-sm font-medium bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 shadow-sm hover:shadow active:scale-95 transition"
+              >
+                ✅ ยืนยันการคัดลอก
               </button>
             </div>
           </div>
