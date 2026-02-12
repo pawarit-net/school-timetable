@@ -85,12 +85,161 @@ export default function ManageAssignments() {
     }
   }
 
+  // --- 🤖 ฟังก์ชันจัดตารางอัตโนมัติ (ใหม่) ---
+  async function handleAutoAssign() {
+    if (!selectedRoom) return alert("กรุณาเลือกห้องเรียนก่อน");
+    
+    // ถาม user ว่าจะล้างของเก่าไหม หรือจะเติมเฉพาะช่องว่าง
+    const mode = confirm(`ต้องการ "ล้างตารางเดิมทั้งหมด" ก่อนจัดใหม่หรือไม่?\n\n[OK] = ล้างแล้วจัดใหม่\n[Cancel] = เติมเฉพาะช่องว่าง`) 
+                 ? 'reset' : 'fill';
+
+    setIsLoading(true);
+    try {
+      // 1. ดึงโครงสร้างรายวิชา (Course Structure) เพื่อดูว่าต้องเรียนวิชาอะไรบ้าง
+      const { data: structures, error: structError } = await supabase
+        .from("course_structures")
+        .select(`*, course_teachers(teacher_id)`)
+        .eq("classroom_id", selectedRoom)
+        .eq("academic_year", termInfo.year)
+        .eq("term", termInfo.semester);
+
+      if (structError || !structures || structures.length === 0) {
+        alert("⚠️ ไม่พบข้อมูลโครงสร้างรายวิชาของห้องนี้\nกรุณาไปที่เมนู 'โครงสร้างรายวิชา' เพื่อกำหนดวิชาเรียนก่อน");
+        setIsLoading(false);
+        return;
+      }
+
+      // 2. ถ้าเลือกโหมด Reset ให้ลบข้อมูลเก่าออกก่อน
+      if (mode === 'reset') {
+         await supabase.from("teaching_assignments")
+           .delete()
+           .eq("classroom_id", selectedRoom)
+           .eq("academic_year", termInfo.year)
+           .eq("semester", termInfo.semester);
+         setScheduleData([]); // เคลียร์ state
+      }
+
+      // 3. เตรียม Pool ของวิชาที่ต้องลง (กระจายตามจำนวนคาบ)
+      let tasksPool: any[] = [];
+      
+      // ดึงข้อมูลตารางปัจจุบัน (กรณีโหมด fill) มาเช็คว่าลงไปเท่าไหร่แล้ว
+      const currentSchedule = mode === 'reset' ? [] : scheduleData;
+
+      structures.forEach(struct => {
+        const subjectId = struct.subject_id;
+        const teacherId = struct.course_teachers?.[0]?.teacher_id; // เอาครูคนแรกที่เจอ
+        const totalNeeded = struct.periods_per_week || 1;
+        
+        // นับว่าวิชานี้ลงไปแล้วกี่คาบ
+        const assignedCount = currentSchedule.filter(s => s.subject_id == subjectId).length;
+        const remaining = totalNeeded - assignedCount;
+
+        for (let i = 0; i < remaining; i++) {
+          tasksPool.push({ subjectId, teacherId });
+        }
+      });
+
+      if (tasksPool.length === 0) {
+        alert("✅ จัดตารางครบตามโครงสร้างแล้ว ไม่เหลือวิชาต้องลงเพิ่ม");
+        setIsLoading(false);
+        return;
+      }
+
+      // สุ่มลำดับวิชา เพื่อไม่ให้วิชาเดิมเรียงกันเป็นพรืด
+      tasksPool = tasksPool.sort(() => Math.random() - 0.5);
+
+      // 4. ดึงข้อมูล "ตารางสอนของครู" ทั้งหมดในเทอมนี้ เพื่อเช็คไม่ให้ชน (Busy Check)
+      // ดึงเฉพาะครูที่เกี่ยวข้องเพื่อประหยัด Query
+      const uniqueTeacherIds = [...new Set(tasksPool.map(t => t.teacherId).filter(Boolean))];
+      const { data: busySlots } = await supabase
+        .from("teaching_assignments")
+        .select("teacher_id, day_of_week, slot_id")
+        .in("teacher_id", uniqueTeacherIds)
+        .eq("academic_year", termInfo.year)
+        .eq("semester", termInfo.semester);
+
+      // 5. วนลูปหาช่องลง
+      const newAssignments: any[] = [];
+      const usedSlots = new Set(currentSchedule.map(s => `${s.day_of_week}-${s.slot_id}`)); // เก็บ slot ที่ห้องนี้ไม่ว่างแล้ว
+
+      // Loop ตามวันและคาบ
+      for (const day of days) {
+        for (const slot of timeSlots) {
+            if (slot.isBreak) continue; // ข้ามเวลาพัก
+            if (tasksPool.length === 0) break; // จบงาน
+
+            const slotKey = `${day}-${slot.id}`;
+            
+            // ถ้าห้องนี้ยังว่างในคาบนี้
+            if (!usedSlots.has(slotKey)) {
+                // หา Task (วิชา) ที่ครู "ไม่ติดสอน" ในคาบนี้
+                const validTaskIndex = tasksPool.findIndex(task => {
+                    if (!task.teacherId) return true; // ถ้าไม่มีครู ลงได้เลย
+                    // เช็คว่าครูคนนี้สอนที่อื่นเวลานี้ไหม
+                    const isBusy = busySlots?.some(b => 
+                        b.teacher_id == task.teacherId && 
+                        b.day_of_week == day && 
+                        b.slot_id == slot.id
+                    );
+                    return !isBusy;
+                });
+
+                if (validTaskIndex !== -1) {
+                    // เจอวิชาที่ลงได้
+                    const task = tasksPool[validTaskIndex];
+                    
+                    newAssignments.push({
+                        classroom_id: parseInt(selectedRoom),
+                        subject_id: parseInt(task.subjectId),
+                        teacher_id: task.teacherId ? parseInt(task.teacherId) : null,
+                        day_of_week: day,
+                        slot_id: parseInt(slot.id.toString()),
+                        academic_year: termInfo.year,
+                        semester: termInfo.semester,
+                        major_group: "ทั้งหมด", // ค่าเริ่มต้น
+                        is_locked: false
+                    });
+
+                    // Mark ว่า slot นี้ใช้แล้ว
+                    usedSlots.add(slotKey);
+                    
+                    // Mark ว่าครูคนนี้ไม่ว่างแล้ว (สำหรับ loop รอบถัดไปใน batch เดียวกัน)
+                    if (task.teacherId) {
+                        busySlots?.push({ teacher_id: task.teacherId, day_of_week: day, slot_id: Number(slot.id) });
+                    }
+
+                    // เอาออกจาก Pool
+                    tasksPool.splice(validTaskIndex, 1);
+                }
+            }
+        }
+      }
+
+      // 6. บันทึกลง DB ทีเดียว
+      if (newAssignments.length > 0) {
+          const { error } = await supabase.from("teaching_assignments").insert(newAssignments);
+          if (error) throw error;
+          
+          await fetchSchedule(); // รีโหลดตาราง
+          alert(`✅ จัดตารางสำเร็จ! ลงเพิ่ม ${newAssignments.length} คาบ\n(เหลือที่ลงไม่ได้: ${tasksPool.length} คาบ)`);
+      } else {
+          alert("ไม่พบช่องว่างที่เหมาะสม หรือครูไม่ว่างในช่องที่เหลือ");
+      }
+
+    } catch (err: any) {
+        console.error(err);
+        alert("เกิดข้อผิดพลาด: " + err.message);
+    } finally {
+        setIsLoading(false);
+    }
+  }
+  // ---------------------------------------------
+
   async function handleSave() {
     if (!formData.subject_id || !formData.teacher_id || !activeSlot) return alert("กรุณาเลือกวิชาและครู");
     setIsLoading(true);
     try {
       // 1. ตรวจสอบครูสอนซ้ำที่ห้องอื่น (Conflict Check)
-      // ใช้ : { data: any } เพื่อให้ TS ยอมรับการเข้าถึง classrooms.name
       const { data: conflict }: { data: any } = await supabase.from("teaching_assignments")
         .select(`id, classrooms(name)`)
         .eq("teacher_id", formData.teacher_id)
@@ -192,8 +341,13 @@ export default function ManageAssignments() {
             </select>
           </div>
           <div className="flex gap-2 w-full md:w-auto">
-            <button onClick={() => alert("ระบบ Auto-Assign กำลังพัฒนา...")} className="flex-1 md:flex-none px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-sm">🤖 จัดอัตโนมัติ</button>
-            <button onClick={clearSchedule} className="flex-1 md:flex-none px-6 py-3 border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 transition">🗑️ ล้างตาราง</button>
+            {/* ✅ เรียกใช้ฟังก์ชัน handleAutoAssign ที่นี่ */}
+            <button onClick={handleAutoAssign} disabled={!selectedRoom} className="flex-1 md:flex-none px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                🤖 จัดอัตโนมัติ
+            </button>
+            <button onClick={clearSchedule} disabled={!selectedRoom} className="flex-1 md:flex-none px-6 py-3 border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 transition disabled:opacity-50">
+                🗑️ ล้างตาราง
+            </button>
           </div>
         </div>
 

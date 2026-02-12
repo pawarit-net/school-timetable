@@ -31,7 +31,9 @@ export default function CourseStructurePage() {
       
       const reqClassrooms = supabase.from("classrooms").select("*").order('id');
       const reqSubjects = supabase.from("subjects").select("*").order('id');
-      const reqTeachers = supabase.from("teachers").select("*").order('id');
+      
+      // ✅ แก้ไข: เรียงตาม department ก่อน เพื่อให้ข้อมูลสวยงามเวลาจัดกลุ่ม
+      const reqTeachers = supabase.from("teachers").select("*").order('department', { ascending: true }).order('full_name');
       
       const reqCourses = supabase
         .from("course_structures")
@@ -347,8 +349,22 @@ export default function CourseStructurePage() {
                     required
                   >
                     <option value="">-- เลือกครู --</option>
-                    {teachers.map(t => (
-                      <option key={t.id} value={t.id}>{getTeacherName(t)}</option>
+                    {/* ✅ แก้ไข: วนลูปแสดงผลแบบจัดกลุ่มตาม department (ใช้ optgroup) */}
+                    {Object.entries(
+                      teachers.reduce((acc: any, t: any) => {
+                        const dept = t.department || 'ทั่วไป'; // ถ้าไม่มีหมวด ให้เป็น 'ทั่วไป'
+                        if (!acc[dept]) acc[dept] = [];
+                        acc[dept].push(t);
+                        return acc;
+                      }, {})
+                    ).map(([dept, teachersInDept]: [string, any]) => (
+                      <optgroup key={dept} label={`📂 ${dept}`}>
+                        {teachersInDept.map((t: any) => (
+                          <option key={t.id} value={t.id}>
+                            {getTeacherName(t)} {t.nickname ? `(${t.nickname})` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </div>

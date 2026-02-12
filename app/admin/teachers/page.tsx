@@ -3,13 +3,13 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
 
-
 export default function ManageTeachers() {
   const [teachers, setTeachers] = useState<any[]>([])
   
   // Form States
   const [fullName, setFullName] = useState('')
   const [nickname, setNickname] = useState('')
+  const [department, setDepartment] = useState('') // ✅ เพิ่ม State สำหรับหมวด
   
   // Edit State
   const [editId, setEditId] = useState<number | null>(null)
@@ -17,17 +17,22 @@ export default function ManageTeachers() {
   useEffect(() => { fetchTeachers() }, [])
 
   async function fetchTeachers() {
-    const { data } = await supabase.from('teachers').select('*').order('id')
+    // ✅ ดึงข้อมูลโดยเรียงตามหมวดก่อน แล้วตามด้วยชื่อ
+    const { data } = await supabase.from('teachers').select('*').order('department').order('full_name')
     setTeachers(data || [])
   }
 
   async function handleSubmit() {
     if (!fullName) return alert('กรุณาใส่ชื่อ-นามสกุล')
     
-    const payload = { full_name: fullName, nickname }
+    // ✅ เพิ่ม department เข้าไปใน payload
+    const payload = { 
+      full_name: fullName, 
+      nickname, 
+      department: department || 'ทั่วไป' 
+    }
 
     if (editId) {
-      // --- โหมดแก้ไข ---
       const { error } = await supabase.from('teachers').update(payload).eq('id', editId)
       if (error) alert(error.message)
       else {
@@ -35,7 +40,6 @@ export default function ManageTeachers() {
         fetchTeachers()
       }
     } else {
-      // --- โหมดเพิ่มใหม่ ---
       const { error } = await supabase.from('teachers').insert([payload])
       if (error) alert(error.message)
       else {
@@ -49,6 +53,7 @@ export default function ManageTeachers() {
     setEditId(t.id)
     setFullName(t.full_name)
     setNickname(t.nickname || '')
+    setDepartment(t.department || '') // ✅ ดึงหมวดเดิมมาแสดงตอนแก้ไข
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
@@ -56,6 +61,7 @@ export default function ManageTeachers() {
     setEditId(null)
     setFullName('')
     setNickname('')
+    setDepartment('') // ✅ ล้างค่าหมวด
   }
 
   async function handleDelete(id: number) {
@@ -65,13 +71,13 @@ export default function ManageTeachers() {
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto font-sans bg-slate-50 min-h-screen">
+    <div className="p-8 max-w-5xl mx-auto font-sans bg-slate-50 min-h-screen">
       
       {/* Header */}
       <div className="flex justify-between items-center mb-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">👨‍🏫 จัดการรายชื่อครู</h1>
-          <p className="text-slate-500 text-sm">เพิ่ม/ลบ/แก้ไข ข้อมูลคุณครูในโรงเรียน</p>
+          <p className="text-slate-500 text-sm">เพิ่ม/ลบ/แก้ไข ข้อมูลคุณครูและแบ่งหมวดหมู่กลุ่มสาระ</p>
         </div>
         <Link 
           href="/admin" 
@@ -82,28 +88,35 @@ export default function ManageTeachers() {
       </div>
 
       {/* Form Area */}
-      <div className={`p-6 rounded-lg shadow-sm border mb-6 flex gap-4 items-end transition-colors ${editId ? 'bg-yellow-50 border-yellow-200' : 'bg-white border-slate-200'}`}>
+      <div className={`p-6 rounded-lg shadow-sm border mb-6 transition-colors ${editId ? 'bg-yellow-50 border-yellow-200' : 'bg-white border-slate-200'}`}>
         
-        {editId && <div className="w-full text-sm text-yellow-700 font-bold mb-[-10px]">⚠️ กำลังแก้ไขข้อมูล: {fullName}</div>}
+        {editId && <div className="text-sm text-yellow-700 font-bold mb-4">⚠️ กำลังแก้ไขข้อมูล: {fullName}</div>}
 
-        <div className="flex-1">
-          <label className="text-sm font-bold text-slate-700 mb-1 block">ชื่อ-นามสกุล (จริง)</label>
-          <input className="border border-slate-300 p-2 rounded w-full" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="เช่น นายสมชาย ใจดี" />
-        </div>
-        <div className="w-40">
-          <label className="text-sm font-bold text-slate-700 mb-1 block">ชื่อเล่น</label>
-          <input className="border border-slate-300 p-2 rounded w-full" value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ครูเอ" />
-        </div>
-        
-        <div className="flex gap-2">
-            <button onClick={handleSubmit} className={`text-white px-6 py-2 rounded font-bold h-[42px] transition-colors ${editId ? 'bg-yellow-500 hover:bg-yellow-600' : 'bg-green-600 hover:bg-green-700'}`}>
-                {editId ? 'บันทึกแก้ไข' : '+ เพิ่ม'}
-            </button>
-            {editId && (
-                <button onClick={cancelEdit} className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-4 py-2 rounded font-bold h-[42px]">
-                    ยกเลิก
-                </button>
-            )}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+          <div className="md:col-span-1">
+            <label className="text-sm font-bold text-slate-700 mb-1 block">ชื่อ-นามสกุล (จริง)</label>
+            <input className="border border-slate-300 p-2 rounded w-full" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="เช่น นายสมชาย ใจดี" />
+          </div>
+          <div>
+            <label className="text-sm font-bold text-slate-700 mb-1 block">ชื่อเล่น</label>
+            <input className="border border-slate-300 p-2 rounded w-full" value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ครูเอ" />
+          </div>
+          {/* ✅ ช่องกรอกหมวดหมู่ */}
+          <div>
+            <label className="text-sm font-bold text-slate-700 mb-1 block">หมวด/กลุ่มสาระ</label>
+            <input className="border border-slate-300 p-2 rounded w-full" value={department} onChange={e => setDepartment(e.target.value)} placeholder="เช่น ภาษาไทย, คณิต" />
+          </div>
+          
+          <div className="flex gap-2">
+              <button onClick={handleSubmit} className={`flex-1 text-white px-6 py-2 rounded font-bold h-[42px] transition-colors ${editId ? 'bg-yellow-500 hover:bg-yellow-600' : 'bg-green-600 hover:bg-green-700'}`}>
+                  {editId ? 'บันทึก' : '+ เพิ่ม'}
+              </button>
+              {editId && (
+                  <button onClick={cancelEdit} className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-4 py-2 rounded font-bold h-[42px]">
+                      ยกเลิก
+                  </button>
+              )}
+          </div>
         </div>
       </div>
 
@@ -115,6 +128,7 @@ export default function ManageTeachers() {
               <th className="p-4 font-bold text-slate-700">ID</th>
               <th className="p-4 font-bold text-slate-700">ชื่อ-นามสกุล</th>
               <th className="p-4 font-bold text-slate-700">ชื่อเล่น</th>
+              <th className="p-4 font-bold text-slate-700">หมวด/กลุ่มสาระ</th> {/* ✅ เพิ่มคอลัมน์ใหม่ */}
               <th className="p-4 text-right font-bold text-slate-700 w-48">จัดการ</th>
             </tr>
           </thead>
@@ -124,6 +138,12 @@ export default function ManageTeachers() {
                 <td className="p-4 text-gray-500">{t.id}</td>
                 <td className="p-4 font-medium text-slate-800">{t.full_name}</td>
                 <td className="p-4 text-slate-600">{t.nickname}</td>
+                {/* ✅ แสดงชื่อหมวดหมู่ */}
+                <td className="p-4">
+                  <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-bold border border-blue-100">
+                    {t.department || 'ทั่วไป'}
+                  </span>
+                </td>
                 <td className="p-4 text-right flex justify-end gap-2">
                   <button 
                     onClick={() => startEdit(t)} 
@@ -141,7 +161,7 @@ export default function ManageTeachers() {
               </tr>
             ))}
             {teachers.length === 0 && (
-              <tr><td colSpan={4} className="p-8 text-center text-gray-400">ยังไม่มีรายชื่อครู</td></tr>
+              <tr><td colSpan={5} className="p-8 text-center text-gray-400">ยังไม่มีรายชื่อครู</td></tr>
             )}
           </tbody>
         </table>

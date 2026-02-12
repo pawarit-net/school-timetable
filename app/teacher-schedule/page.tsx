@@ -17,7 +17,7 @@ export default function TeacherSchedule() {
   const [academicYear, setAcademicYear] = useState(2569); 
   const [semester, setSemester] = useState("1");
 
-  // State ใหม่: สำหรับเลือกขอบเขต (คนเดียว / หมวด / ทั้งหมด) และสถานะ Loading
+  // State ใหม่: สำหรับเลือกขอบเขต
   const [targetScope, setTargetScope] = useState<'current' | 'department' | 'all'>('current'); 
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -46,8 +46,13 @@ export default function TeacherSchedule() {
   }, [selectedTeacher, academicYear, semester]);
 
   async function loadInitialData() {
-    // โหลดรายชื่อครู
-    const { data: tchs } = await supabase.from("teachers").select("*").order("full_name");
+    // แก้ไข 1: เรียงตามหมวดก่อน แล้วค่อยเรียงตามชื่อ
+    const { data: tchs } = await supabase
+        .from("teachers")
+        .select("*")
+        .order("department", { ascending: true }) 
+        .order("full_name", { ascending: true });
+        
     if (tchs) setTeachers(tchs);
 
     // โหลดค่าปีการศึกษาปัจจุบันจาก Settings
@@ -73,7 +78,11 @@ export default function TeacherSchedule() {
     if (data) setScheduleData(data);
   }
 
-  // --- ฟังก์ชัน 1: ล็อกคาบประชุม (รองรับหลายคน: Group Lock) ---
+  // --- Logic สำหรับจัดกลุ่มหมวดวิชา (เตรียมข้อมูลสำหรับแสดงผล) ---
+  // หาหมวดทั้งหมดที่ไม่ซ้ำกัน
+  const uniqueDepartments = Array.from(new Set(teachers.map(t => t.department || "ไม่ระบุหมวด")));
+
+  // --- ฟังก์ชัน 1: ล็อกคาบประชุม ---
   async function handleSetMeeting() {
     if (!activeSlot || !selectedTeacher) return;
     setIsProcessing(true);
@@ -89,7 +98,6 @@ export default function TeacherSchedule() {
         teacherIdsToUpdate = teachers.map(t => t.id);
       } 
       else if (targetScope === 'department') {
-        // ต้องแปลง ID ให้เป็น String เพื่อเทียบค่าให้ชัวร์
         const currentTeacherInfo = teachers.find(t => String(t.id) === String(selectedTeacher));
         
         if (currentTeacherInfo?.department) {
@@ -103,7 +111,6 @@ export default function TeacherSchedule() {
         }
       }
 
-      // ถามยืนยันกรณีทำหลายคน
       const confirmMsg = targetScope === 'current' 
         ? "ยืนยันการล็อกคาบนี้?" 
         : `⚠️ คำเตือน: คุณกำลังจะล็อกคาบนี้ให้กับครูจำนวน ${teacherIdsToUpdate.length} ท่าน\nข้อมูลเก่าในคาบนี้ของทุกคนจะถูกลบ! ยืนยันหรือไม่?`;
@@ -113,7 +120,7 @@ export default function TeacherSchedule() {
         return;
       }
 
-      // B. ลบข้อมูลเก่าของทุกคนใน List ก่อน (เฉพาะวัน/เวลา/ปี/เทอม นั้นๆ)
+      // B. ลบข้อมูลเก่า
       await supabase
         .from("teaching_assignments")
         .delete()
@@ -123,7 +130,7 @@ export default function TeacherSchedule() {
         .eq("academic_year", academicYear)
         .eq("semester", semester);
 
-      // C. สร้างข้อมูลใหม่สำหรับทุกคน
+      // C. สร้างข้อมูลใหม่
       const newAssignments = teacherIdsToUpdate.map(tId => ({
         teacher_id: tId,
         day_of_week: activeSlot.day,
@@ -141,7 +148,7 @@ export default function TeacherSchedule() {
 
       alert(`✅ บันทึกสำเร็จ! ล็อกคาบให้ครู ${teacherIdsToUpdate.length} ท่านแล้ว`);
       setIsModalOpen(false);
-      fetchSchedule(); // โหลดตารางใหม่
+      fetchSchedule(); 
 
     } catch (err: any) {
       alert("เกิดข้อผิดพลาด: " + err.message);
@@ -150,13 +157,12 @@ export default function TeacherSchedule() {
     }
   }
 
-  // --- ฟังก์ชัน 2: ปล่อยว่าง (รองรับหลายคน) ---
+  // --- ฟังก์ชัน 2: ปล่อยว่าง ---
   async function handleMakeFree() {
     if (!activeSlot) return;
     
     let teacherIdsToDelete: any[] = [];
 
-    // คำนวณ ID เหมือนตอนล็อก
     if (targetScope === 'current') {
         teacherIdsToDelete = [selectedTeacher];
     } else if (targetScope === 'all') {
@@ -200,7 +206,7 @@ export default function TeacherSchedule() {
 
         {/* Filters Bar */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border mb-6 flex flex-wrap gap-4 items-end">
-          {/* เลือกครู */}
+          {/* เลือกครู (แก้ไขส่วนนี้) */}
           <div className="flex-1 min-w-[200px]">
             <label className="block text-xs font-bold text-gray-400 uppercase mb-2">เลือกครูผู้สอน</label>
             <select 
@@ -209,13 +215,25 @@ export default function TeacherSchedule() {
                 onChange={(e) => setSelectedTeacher(e.target.value)}
             >
                 <option value="">-- เลือกรายชื่อครู --</option>
-                {teachers.map(t => (
-                <option key={t.id} value={t.id}>{t.full_name} {t.department ? `(${t.department})` : ""}</option>
+                
+                {/* วนลูปตามหมวดวิชาเพื่อสร้าง OptGroup */}
+                {uniqueDepartments.map((dept: any) => (
+                    <optgroup key={dept} label={dept}>
+                        {teachers
+                            .filter(t => (t.department || "ไม่ระบุหมวด") === dept)
+                            .map(t => (
+                                <option key={t.id} value={t.id}>
+                                    {t.full_name}
+                                </option>
+                            ))
+                        }
+                    </optgroup>
                 ))}
+
             </select>
           </div>
           
-          {/* เลือกปี (เพิ่มกลับมาให้แล้ว) */}
+          {/* เลือกปี */}
           <div className="w-32">
              <label className="block text-xs font-bold text-gray-400 uppercase mb-2">ปีการศึกษา</label>
              <input 
@@ -226,7 +244,7 @@ export default function TeacherSchedule() {
              />
           </div>
 
-          {/* เลือกเทอม (เพิ่ม Summer ให้แล้ว) */}
+          {/* เลือกเทอม */}
           <div className="w-32">
              <label className="block text-xs font-bold text-gray-400 uppercase mb-2">เทอม</label>
              <select value={semester} onChange={(e)=>setSemester(e.target.value)} className="w-full p-3 border rounded-xl bg-gray-50 font-bold">
@@ -273,7 +291,6 @@ export default function TeacherSchedule() {
                           className={`border-r p-2 h-28 text-center cursor-pointer transition relative group ${cellClass}`}
                           onClick={() => {
                             setActiveSlot({day, slotId: Number(slot.id)});
-                            // ตั้งค่าเริ่มต้น และ Reset Scope กลับเป็นคนเดียวเสมอเพื่อความปลอดภัย
                             setTargetScope('current'); 
                             if (match?.activity_type === 'meeting') setMeetingNote(match.note || "ประชุม");
                             else setMeetingNote("ประชุมหมวด/PLC");
@@ -315,7 +332,7 @@ export default function TeacherSchedule() {
             </div>
         )}
 
-        {/* --- Modal จัดการคาบ (Advanced) --- */}
+        {/* --- Modal จัดการคาบ --- */}
         {isModalOpen && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
@@ -339,7 +356,7 @@ export default function TeacherSchedule() {
                     />
                 </div>
 
-                {/* --- ส่วนเลือกขอบเขต (Feature เด็ด: Group Lock) --- */}
+                {/* --- ส่วนเลือกขอบเขต --- */}
                 <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100">
                     <label className="text-xs font-bold text-blue-800 block mb-2">เลือกเป้าหมายที่จะล็อก:</label>
                     <div className="space-y-2">

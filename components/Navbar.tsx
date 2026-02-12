@@ -77,7 +77,7 @@ export default function Navbar() {
 
   const menuItems = [
     { name: "🏠 หน้าหลัก", path: "/" },
-    { name: "📅 จัดตาราง", path: "/manage-schedule" },
+    { name: "📅 จัดตาราง", path: "/courses" },
     { name: "👤 ตารางครู", path: "/teacher-schedule" },
     { name: "👨‍🏫 ครู", path: "/manage-teachers" },
     { name: "🏢 ห้อง", path: "/manage-classrooms" },
