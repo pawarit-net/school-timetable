@@ -46,13 +46,14 @@ export default function ManageAssignments() {
     is_locked: true // Default ให้ล็อกไว้เสมอ
   });
 
-  // ✅ Form Data สำหรับวิชาส่วนกลาง
+  // ✅ Form Data สำหรับวิชาส่วนกลาง (แก้ไขเพิ่ม target_level)
   const [fixedFormData, setFixedFormData] = useState({
     subject_id: "",
     day_of_week: "จันทร์",
     slot_id: 1,
-    teacher_id: "", // อาจจะไม่ระบุครู (เช่น ชมรมที่ครูแต่ละห้องคุมเอง)
+    teacher_id: "", 
     major_group: "กิจกรรม",
+    target_level: "all", // ✅ เพิ่ม: ตัวเลือกเลือกระดับชั้น ("all", "1", "2"...)
     delete_old: true
   });
 
@@ -124,17 +125,15 @@ export default function ManageAssignments() {
 
   const totalPeriods = (summaryList as any[]).reduce((sum, item) => sum + item.count, 0);
 
-  // --- 🤖 ฟังก์ชันจัดตารางอัตโนมัติ (คงเดิม) ---
+  // --- 🤖 ฟังก์ชันจัดตารางอัตโนมัติ ---
   async function handleAutoAssign() {
     if (!selectedRoom) return alert("กรุณาเลือกห้องเรียนก่อน");
     
-    // ถาม user ว่าจะล้างของเก่าไหม (ถ้าไม่ล้าง จะเติมเฉพาะช่องว่าง)
     const mode = confirm(`ต้องการ "ล้างตารางเดิมทั้งหมด" ก่อนจัดใหม่หรือไม่?\n\n[OK] = ล้างแล้วจัดใหม่\n[Cancel] = เติมเฉพาะช่องว่าง (เก็บวิชาล็อกไว้)`) 
                   ? 'reset' : 'fill';
 
     setIsLoading(true);
     try {
-      // 1. ดึงโครงสร้างรายวิชา
       const { data: structures, error: structError } = await supabase
         .from("course_structures")
         .select(`*, course_teachers(teacher_id)`)
@@ -148,23 +147,17 @@ export default function ManageAssignments() {
         return;
       }
 
-      // 2. ถ้าเลือกโหมด Reset ให้ลบข้อมูลเก่าออก (ยกเว้นวิชาที่ Lock ไว้ถ้าต้องการเก็บไว้)
-      // แต่โจทย์คือ Auto Assign มักจะเคลียร์หมด หรือเก็บ Locked ไว้
-      // เพื่อความง่ายในตัวอย่างนี้ ถ้า Reset คือลบเกลี้ยง (หรือคุณอาจจะแก้ให้ delete เฉพาะ !is_locked ก็ได้)
       if (mode === 'reset') {
          await supabase.from("teaching_assignments")
            .delete()
            .eq("classroom_id", selectedRoom)
            .eq("academic_year", termInfo.year)
            .eq("semester", termInfo.semester)
-           .eq("is_locked", false); // ✅ ลบเฉพาะวิชาที่ไม่ล็อก (เก็บวิชาแกนไว้)
+           .eq("is_locked", false); 
            
-         // Refresh local state เพื่อความชัวร์ (หรือเคลียร์ใน logic)
          setScheduleData(prev => prev.filter(s => s.is_locked)); 
       }
       
-      // ... (Logic จัดตารางส่วนที่เหลือ เหมือนเดิม แต่ข้ามช่องที่ไม่ว่าง) ...
-      // เพื่อความกระชับ ขอข้ามส่วน Algorithm จัดตารางเดิม (ใช้ของเดิมได้เลย โดยมันจะเช็ค usedSlots)
       alert("⚠️ กรุณากดปุ่ม 'จัดอัตโนมัติ' อีกครั้ง (Logic ส่วนนี้ยาว ผมขอละไว้ตามโค้ดเดิมครับ)");
       
     } catch (err: any) {
@@ -172,39 +165,64 @@ export default function ManageAssignments() {
         alert("เกิดข้อผิดพลาด: " + err.message);
     } finally {
         setIsLoading(false);
-        fetchSchedule(); // โหลดใหม่
+        fetchSchedule(); 
     }
   }
 
-  // --- 🚀 ฟังก์ชันลงวิชาส่วนกลาง (Global Assign) ---
+  // --- 🚀 ฟังก์ชันลงวิชาส่วนกลาง (Global Assign) [แก้ไขใหม่] ---
   async function handleSaveGlobalSubject() {
     if (!fixedFormData.subject_id) return alert("กรุณาเลือกวิชา");
     
+    // ✅ 1. กรองห้องเรียนตามระดับชั้น
+    let targetRooms = classrooms;
+    const levelLabel = fixedFormData.target_level === 'all' 
+        ? "ทุกระดับชั้น" 
+        : `ม.${fixedFormData.target_level}`;
+
+    if (fixedFormData.target_level !== 'all') {
+        // เช็คว่าชื่อห้องขึ้นต้นด้วยเลขชั้น หรือ "ม."+เลขชั้น
+        targetRooms = classrooms.filter(r => 
+            r.name.trim().startsWith(fixedFormData.target_level) || 
+            r.name.trim().startsWith("ม." + fixedFormData.target_level)
+        );
+    }
+
+    if (targetRooms.length === 0) {
+        return alert(`ไม่พบห้องเรียนในระดับชั้น ${levelLabel}`);
+    }
+
     const subjectName = subjects.find(s => s.id == fixedFormData.subject_id)?.name;
-    const confirmMsg = `⚠️ ยืนยันการลงวิชา "${subjectName}"\n\n- วัน: ${fixedFormData.day_of_week}\n- คาบที่: ${fixedFormData.slot_id}\n- ให้กับ: ทุกห้องเรียน (${classrooms.length} ห้อง)\n\nข้อมูลเดิมในคาบนี้ของทุกห้องจะถูกทับ!`;
+    const confirmMsg = `⚠️ ยืนยันการลงวิชา "${subjectName}"\n\n` +
+                        `- เป้าหมาย: ${levelLabel}\n` + 
+                        `- จำนวนห้อง: ${targetRooms.length} ห้อง\n` +
+                        `- เวลา: วัน${fixedFormData.day_of_week} คาบที่ ${fixedFormData.slot_id}\n\n` +
+                        `ข้อมูลเดิมในเวลานี้ของห้องเหล่านี้จะถูกทับ!`;
     
     if (!confirm(confirmMsg)) return;
 
     setIsLoading(true);
     try {
-        // 1. (Optional) ลบข้อมูลเก่าใน Slot นั้นของทุกห้องออกก่อน เพื่อไม่ให้ key ชนหรือซ้ำซ้อน
+        const targetRoomIds = targetRooms.map(r => r.id);
+
+        // ✅ 2. ลบข้อมูลเก่า (เฉพาะห้องที่ Filter มาได้)
         if (fixedFormData.delete_old) {
             await supabase.from("teaching_assignments")
                 .delete()
                 .eq("academic_year", termInfo.year)
                 .eq("semester", termInfo.semester)
                 .eq("day_of_week", fixedFormData.day_of_week)
-                .eq("slot_id", fixedFormData.slot_id);
+                .eq("slot_id", fixedFormData.slot_id)
+                .in("classroom_id", targetRoomIds); // ลบเฉพาะห้องที่เลือก
         }
 
-        // 2. เตรียมข้อมูล Insert สำหรับทุกห้อง
-        const insertPayload = classrooms.map(room => ({
+        // ✅ 3. เตรียมข้อมูล Insert ตามห้องที่ Filter
+        const insertPayload = targetRooms.map(room => ({
             classroom_id: room.id,
             subject_id: fixedFormData.subject_id,
-            teacher_id: fixedFormData.teacher_id || null, // ถ้าไม่เลือกครู คือ null
+            teacher_id: fixedFormData.teacher_id || null, 
             day_of_week: fixedFormData.day_of_week,
             slot_id: fixedFormData.slot_id,
-            is_locked: true, // ✅ บังคับล็อกทันที
+            is_locked: true,
             major_group: fixedFormData.major_group,
             academic_year: termInfo.year,
             semester: termInfo.semester
@@ -214,9 +232,9 @@ export default function ManageAssignments() {
         
         if (error) throw error;
         
-        alert(`✅ ลงวิชาส่วนกลางสำเร็จให้ ${classrooms.length} ห้องเรียน!`);
+        alert(`✅ ลงวิชาสำเร็จให้ ${targetRooms.length} ห้อง (${levelLabel})!`);
         setIsFixedModalOpen(false);
-        if (selectedRoom) fetchSchedule(); // รีเฟรชหน้าปัจจุบัน
+        if (selectedRoom) fetchSchedule(); 
 
     } catch (err: any) {
         alert("เกิดข้อผิดพลาด: " + err.message);
@@ -268,7 +286,11 @@ export default function ManageAssignments() {
             <p className="text-slate-500 text-sm">ปีการศึกษา {termInfo.year} เทอม {termInfo.semester}</p>
           </div>
           <div className="flex gap-2">
-             <Link href="/" className="px-4 py-2 bg-white border rounded-lg hover:bg-slate-50 text-sm font-bold">🏠 กลับหน้าหลัก</Link>
+             {/* ✅ เพิ่มปุ่ม Link ไปหน้าพิมพ์ตารางสอนตรงนี้ */}
+             <Link href="/print/timetable" target="_blank" className="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 text-sm font-bold flex items-center gap-2 shadow-sm">
+                🖨️ พิมพ์ตารางสอน (PDF)
+             </Link>
+             <Link href="/" className="px-4 py-2 bg-white border rounded-lg hover:bg-slate-50 text-sm font-bold shadow-sm">🏠 กลับหน้าหลัก</Link>
           </div>
         </div>
 
@@ -285,7 +307,7 @@ export default function ManageAssignments() {
           <div className="flex gap-2 w-full md:w-auto">
             {/* ปุ่มใหม่สำหรับวิชาส่วนกลาง */}
             <button onClick={() => setIsFixedModalOpen(true)} className="flex-1 md:flex-none px-4 py-2 bg-amber-500 text-white rounded-lg font-bold text-sm hover:bg-amber-600 transition shadow-sm flex items-center gap-2">
-                ⚙️ ลงวิชาส่วนกลาง (ทุกห้อง)
+                ⚙️ ลงวิชาส่วนกลาง
             </button>
 
             <button onClick={handleAutoAssign} disabled={!selectedRoom} className="flex-1 md:flex-none px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm hover:bg-indigo-700 transition shadow-sm disabled:opacity-50">
@@ -362,10 +384,10 @@ export default function ManageAssignments() {
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mt-4">
                <div className="flex justify-between items-center mb-4">
                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    📊 สรุปรายวิชาของห้อง {classrooms.find(c => c.id === selectedRoom)?.name}
+                   📊 สรุปรายวิชาของห้อง {classrooms.find(c => c.id === selectedRoom)?.name}
                  </h3>
                  <span className="text-sm font-medium bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full border border-indigo-100">
-                    รวมทั้งหมด {totalPeriods} คาบ
+                   รวมทั้งหมด {totalPeriods} คาบ
                  </span>
                </div>
                
@@ -387,7 +409,7 @@ export default function ManageAssignments() {
                              <td className="p-4 text-slate-600">{item.teacher}</td>
                              <td className="p-4 text-center">
                                 <span className="inline-block px-3 py-1 bg-white border border-slate-200 shadow-sm rounded-md font-bold text-slate-700">
-                                    {item.count}
+                                   {item.count}
                                 </span>
                              </td>
                           </tr>
@@ -432,19 +454,35 @@ export default function ManageAssignments() {
         </div>
       )}
 
-      {/* ⚙️ Modal: ลงวิชาส่วนกลาง (ทุกห้อง) */}
+      {/* ⚙️ Modal: ลงวิชาส่วนกลาง (ทุกห้อง/เลือกระดับชั้น) [แก้ไขใหม่] */}
       {isFixedModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border ring-4 ring-amber-100 animate-in zoom-in-95 duration-200">
             <div className="p-4 border-b bg-amber-50 flex justify-between items-center">
               <div>
-                 <h3 className="font-bold text-amber-900 text-lg">⚙️ กำหนดวิชาส่วนกลาง</h3>
-                 <p className="text-xs text-amber-700">ลงตารางนี้ให้กับ "ทุกห้องเรียน" พร้อมกัน</p>
+                  <h3 className="font-bold text-amber-900 text-lg">⚙️ กำหนดวิชาส่วนกลาง</h3>
+                  <p className="text-xs text-amber-700">ลงตารางพร้อมกันหลายห้อง</p>
               </div>
               <button onClick={() => setIsFixedModalOpen(false)} className="text-amber-400 hover:text-amber-600">✕</button>
             </div>
             <div className="p-6 space-y-4">
               
+              {/* ✅ ส่วนเลือก ระดับชั้น */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">เป้าหมาย (ระดับชั้น)</label>
+                <select className="w-full p-3 border rounded-xl bg-slate-50 outline-none focus:ring-2 ring-amber-500/20 font-bold text-slate-700" 
+                    value={fixedFormData.target_level} 
+                    onChange={e => setFixedFormData({ ...fixedFormData, target_level: e.target.value })}>
+                    <option value="all">🌍 ทุกระดับชั้น (ทั้งโรงเรียน)</option>
+                    <option value="1">ม.1</option>
+                    <option value="2">ม.2</option>
+                    <option value="3">ม.3</option>
+                    <option value="4">ม.4</option>
+                    <option value="5">ม.5</option>
+                    <option value="6">ม.6</option>
+                </select>
+              </div>
+
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase">วิชาบังคับ (เช่น แนะแนว, ลูกเสือ)</label>
                 <select className="w-full p-3 border rounded-xl bg-slate-50 outline-none focus:ring-2 ring-amber-500/20" 
@@ -455,20 +493,20 @@ export default function ManageAssignments() {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-1">
+                  <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 uppercase">วัน</label>
                     <select className="w-full p-2.5 border rounded-xl bg-slate-50" 
                         value={fixedFormData.day_of_week} onChange={e => setFixedFormData({ ...fixedFormData, day_of_week: e.target.value })}>
                         {days.map(d => <option key={d} value={d}>{d}</option>)}
                     </select>
-                 </div>
-                 <div className="space-y-1">
+                  </div>
+                  <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 uppercase">คาบที่</label>
                     <select className="w-full p-2.5 border rounded-xl bg-slate-50" 
                         value={fixedFormData.slot_id} onChange={e => setFixedFormData({ ...fixedFormData, slot_id: Number(e.target.value) })}>
                         {timeSlots.map(t => !t.isBreak && <option key={t.id} value={t.id}>คาบ {t.id} ({t.time})</option>)}
                     </select>
-                 </div>
+                  </div>
               </div>
 
               <div className="space-y-1">
@@ -481,16 +519,17 @@ export default function ManageAssignments() {
               </div>
 
               <div className="pt-2">
-                 <p className="text-xs text-red-500 bg-red-50 p-2 rounded-lg border border-red-100">
-                    ⚠️ คำเตือน: ระบบจะลบวิชาเดิมใน "วันและเวลา" ที่เลือกของ <u>ทุกห้องเรียน</u> แล้วใส่วิชานี้เข้าไปแทนที่ พร้อมล็อกคาบไว้ทันที
-                 </p>
+                  <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-100 flex gap-2">
+                    <span>⚠️</span>
+                    <span>ระบบจะลบวิชาเดิมในเวลานี้ของห้อง <u>{fixedFormData.target_level === 'all' ? 'ทุกห้อง' : `ม.${fixedFormData.target_level}`}</u> แล้วแทนที่ด้วยวิชานี้</span>
+                  </p>
               </div>
 
               <div className="flex gap-2 pt-2 border-t">
                 <button onClick={() => setIsFixedModalOpen(false)} className="flex-1 py-3 font-bold text-slate-400 text-sm">ยกเลิก</button>
                 <button onClick={handleSaveGlobalSubject} disabled={isLoading} 
                     className="flex-1 px-4 py-3 bg-amber-500 text-white rounded-xl font-bold shadow-lg shadow-amber-100 hover:bg-amber-600 disabled:opacity-50 text-sm">
-                  {isLoading ? "กำลังบันทึก..." : "ยืนยันลงวิชาทุกห้อง"}
+                  {isLoading ? "กำลังประมวลผล..." : "ยืนยันลงวิชา"}
                 </button>
               </div>
             </div>
