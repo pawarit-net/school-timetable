@@ -6,46 +6,62 @@ import { useRouter } from "next/navigation";
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState(""); // รับค่า รหัสประจำตัว (Teacher Code)
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // ฟังก์ชันล็อกอินด้วย Email + รหัสประจำตัว (ระบบใหม่)
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setErrorMsg("");
 
+    const cleanEmail = email.trim();
+    const cleanPassword = password.trim();
+
+    // 🔍 DEBUG 1: ดูว่าเราส่งค่าอะไรไป
+    console.log("🟢 1. กำลังค้นหา:", { cleanEmail, cleanPassword });
+
     try {
-        // Step 1: เช็คก่อนว่ามีชื่อและรหัสตรงกันในฐานข้อมูล teachers ไหม?
+        // Step 1: ค้นหาข้อมูล
         const { data: teacher, error: dbError } = await supabase
             .from("teachers")
             .select("*")
-            .eq("email", email)
-            .eq("teacher_code", password) // เช็ครหัสประจำตัว
-            .single();
+            .ilike("email", cleanEmail) 
+            .eq("teacher_code", cleanPassword) 
+            .maybeSingle();
 
-        if (dbError || !teacher) {
-            throw new Error("ไม่พบข้อมูล! กรุณาตรวจสอบอีเมล หรือรหัสประจำตัว");
+        // 🔍 DEBUG 2: ดูผลลัพธ์จาก Supabase
+        console.log("🟡 2. ผลลัพธ์จาก DB:", teacher);
+        console.log("🔴 3. Error จาก DB (ถ้ามี):", dbError);
+
+        if (dbError) {
+            // ถ้าเป็น error เกี่ยวกับ policy แสดงว่าลืมปิด RLS
+            console.error("Database Error Detail:", dbError.message);
+            throw new Error("เกิดข้อผิดพลาดจากฐานข้อมูล: " + dbError.message);
         }
 
-        // Step 2: ถ้ามีตัวตนจริง ให้ลอง Login เข้า Supabase Auth
+        if (!teacher) {
+            // ถ้าไม่เจอ teacher แสดงว่า Email หรือ Password ไม่ตรง หรือติด RLS
+            throw new Error("ไม่พบข้อมูล! (ผลลัพธ์เป็น null) กรุณาเช็ค RLS หรือ ตัวสะกด");
+        }
+
+        // Step 2: Login Auth
         const { error: signInError } = await supabase.auth.signInWithPassword({
-            email: email,
-            password: password,
+            email: cleanEmail,
+            password: cleanPassword,
         });
 
         if (!signInError) {
-            // Login สำเร็จ
             router.push("/");
             return;
         }
 
-        // Step 3: ถ้า Login ไม่ได้ (เช่น เข้าครั้งแรก) ให้ Auto Sign Up
-        if (signInError.message.includes("Invalid login credentials")) {
+        // Step 3: Auto Sign Up
+        if (signInError.message.includes("Invalid login credentials") || signInError.message.includes("Email not confirmed")) {
+            console.log("🔵 4. กำลังสมัครสมาชิกอัตโนมัติ...");
             const { error: signUpError } = await supabase.auth.signUp({
-                email: email,
-                password: password,
+                email: cleanEmail,
+                password: cleanPassword,
                 options: {
                     data: { 
                         full_name: teacher.full_name,
@@ -55,14 +71,13 @@ export default function LoginPage() {
             });
 
             if (signUpError) throw signUpError;
-
-            // Sign Up สำเร็จ -> ไปหน้าแรก
             router.push("/");
         } else {
-            throw signInError; // Error อื่นๆ
+            throw signInError;
         }
 
     } catch (err: any) {
+        console.error("❌ Catch Error:", err);
         setErrorMsg(err.message);
     } finally {
         setLoading(false);
@@ -75,23 +90,21 @@ export default function LoginPage() {
         
         <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-blue-900">เข้าสู่ระบบ</h1>
-            <p className="text-gray-500 text-sm mt-2">ระบบจัดตารางสอนออนไลน์</p>
+            <p className="text-gray-500 text-sm mt-2">ระบบจัดตารางสอนออนไลน์ (Debug Mode)</p>
         </div>
         
-        {/* แสดง Error Message ถ้ามี */}
         {errorMsg && (
-            <div className="mb-6 bg-red-50 border border-red-200 text-red-600 text-sm p-3 rounded-lg text-center flex items-center justify-center gap-2">
+            <div className="mb-6 bg-red-50 border border-red-200 text-red-600 text-sm p-3 rounded-lg text-center">
                 ⚠️ {errorMsg}
             </div>
         )}
 
-        {/* Form Login */}
         <form onSubmit={handleLogin} className="space-y-6">
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-1">อีเมลโรงเรียน</label>
             <input 
               type="email" 
-              className="w-full border-2 border-gray-200 p-3 rounded-xl bg-white text-black focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition font-medium"
+              className="w-full border-2 border-gray-200 p-3 rounded-xl bg-white text-black outline-none focus:border-blue-500"
               placeholder="teacher@school.ac.th"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -100,32 +113,25 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-bold text-gray-700 mb-1">
-                รหัสประจำตัว (Password)
-            </label>
+            <label className="block text-sm font-bold text-gray-700 mb-1">รหัสประจำตัว (Password)</label>
             <input 
               type="password" 
-              className="w-full border-2 border-gray-200 p-3 rounded-xl bg-white text-black focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition font-mono tracking-widest text-lg"
+              className="w-full border-2 border-gray-200 p-3 rounded-xl bg-white text-black outline-none focus:border-blue-500 font-mono text-lg"
               placeholder="••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
             />
-             <p className="text-xs text-gray-400 mt-2 text-right">ใช้รหัสประจำตัวครู (เช่น T001) ในการเข้าใช้งาน</p>
           </div>
 
           <button 
             type="submit" 
             disabled={loading}
-            className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700 transition-all active:scale-95 disabled:bg-gray-400 disabled:cursor-not-allowed shadow-lg shadow-blue-200"
+            className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg"
           >
-            {loading ? "กำลังตรวจสอบข้อมูล..." : "เข้าสู่ระบบ"}
+            {loading ? "กำลังตรวจสอบ..." : "เข้าสู่ระบบ"}
           </button>
         </form>
-
-        <p className="mt-8 text-center text-xs text-gray-400 font-medium">
-          * ระบบจะลงทะเบียนให้อัตโนมัติสำหรับการใช้งานครั้งแรก
-        </p>
       </div>
     </div>
   );

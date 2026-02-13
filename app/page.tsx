@@ -169,7 +169,8 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20">
       
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+      {/* --- ส่วน Header แก้ไขเป็น bg-white แล้ว --- */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-7xl mx-auto px-6 py-4 md:py-6">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <div>
@@ -220,7 +221,6 @@ export default function Home() {
                 <p className="text-sm text-slate-500 mt-1">จับคู่ วิชา + ครู + ห้องเรียน</p>
              </Link>
 
-             {/* แก้ไขส่วนนี้เพื่อให้ลิงก์ไปยัง manage-assignments */}
              <Link href="/manage-assignments" className="group p-6 bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all">
                 <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition">
                   🏫
@@ -249,10 +249,10 @@ export default function Home() {
         {/* --- Section 3: Recent Activity Table --- */}
         <div>
            <div className="flex justify-between items-end mb-4">
-              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                📝 ความเคลื่อนไหวล่าสุด
-              </h2>
-              <span className="text-xs text-slate-400">5 รายการล่าสุด</span>
+             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+               📝 ความเคลื่อนไหวล่าสุด
+             </h2>
+             <span className="text-xs text-slate-400">5 รายการล่าสุด</span>
            </div>
            
            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
