@@ -105,20 +105,24 @@ export default function ManageAssignments() {
     }
   }
 
-  async function fetchSchedule() {
+  async function fetchSchedule(roomId?: string, year?: string, semester?: string) {
+    const room = roomId ?? selectedRoom;
+    const yr = year ?? termInfo.year;
+    const sem = semester ?? termInfo.semester;
+    if (!room) return;
     setIsLoading(true);
     try {
       const [assignRes, structRes] = await Promise.all([
         supabase.from("teaching_assignments")
           .select(`*, subjects(code, name), teachers(full_name, department)`)
-          .eq("classroom_id", selectedRoom)
-          .eq("academic_year", termInfo.year)
-          .eq("semester", termInfo.semester),
+          .eq("classroom_id", room)
+          .eq("academic_year", yr)
+          .eq("semester", sem),
         supabase.from("course_structures")
           .select(`*, course_teachers(teacher_id)`)
-          .eq("classroom_id", selectedRoom)
-          .eq("academic_year", termInfo.year)
-          .eq("term", termInfo.semester)
+          .eq("classroom_id", room)
+          .eq("academic_year", yr)
+          .eq("term", sem)
       ]);
       if (assignRes.data) setScheduleData(assignRes.data as ScheduleItem[]);
       if (structRes.data) setCourseStructures(structRes.data);
@@ -254,11 +258,19 @@ export default function ManageAssignments() {
           .eq("is_locked", false);
       }
 
-      // 3. โหลดตารางปัจจุบัน (หลังจากลบแล้ว) เพื่อรู้ว่าช่องไหนถูกใช้แล้ว
+      // 3. โหลดตารางปัจจุบันของห้องนี้ (หลังจากลบแล้ว)
       const { data: existing } = await supabase
         .from("teaching_assignments")
         .select("day_of_week, slot_id, teacher_id, subject_id")
         .eq("classroom_id", selectedRoom)
+        .eq("academic_year", termInfo.year)
+        .eq("semester", termInfo.semester);
+
+      // 3b. โหลดตารางของทุกห้อง (ยกเว้นห้องนี้) เพื่อเช็คครูชนข้ามห้อง
+      const { data: allRoomsExisting } = await supabase
+        .from("teaching_assignments")
+        .select("day_of_week, slot_id, teacher_id")
+        .neq("classroom_id", selectedRoom)
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester);
 
@@ -267,12 +279,15 @@ export default function ManageAssignments() {
         (existing || []).map((r: any) => `${r.day_of_week}-${r.slot_id}`)
       );
 
-      // ชุด key ที่ครูถูกใช้อยู่แล้ว: "teacherId-day-slotId"
-      const usedTeacherSlots = new Set<string>(
-        (existing || [])
+      // ชุด key ที่ครูถูกใช้อยู่แล้ว: รวมทั้งห้องนี้ + ทุกห้องอื่น
+      const usedTeacherSlots = new Set<string>([
+        ...(existing || [])
           .filter((r: any) => r.teacher_id)
-          .map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`)
-      );
+          .map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`),
+        ...(allRoomsExisting || [])
+          .filter((r: any) => r.teacher_id)
+          .map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`),
+      ]);
 
       // ชุด key วิชาที่ลงในวันนั้นแล้ว: "subjectId-day"
       // — ป้องกันวิชาเดียวกันลงวันซ้ำ และนับจากที่ลงมือเองไว้แล้วด้วย
@@ -391,49 +406,57 @@ export default function ManageAssignments() {
     }
   }
 
-  // --- 🚀 ฟังก์ชันลงวิชาส่วนกลาง (คงเดิม) ---
+  // --- 🚀 ฟังก์ชันลงวิชาส่วนกลาง ---
   async function handleSaveGlobalSubject() {
-    if (!fixedFormData.subject_id) return alert("กรุณาเลือกวิชา");
+    const isFreeMode = fixedFormData.subject_id === '__free__';
+    if (!isFreeMode && !fixedFormData.subject_id) return;
+
     let targetRooms = classrooms;
-    const levelLabel = fixedFormData.target_level === 'all' ? "ทุกระดับชั้น" : `ม.${fixedFormData.target_level}`;
     if (fixedFormData.target_level !== 'all') {
-        targetRooms = classrooms.filter(r => 
-            r.name.trim().startsWith(fixedFormData.target_level) || 
-            r.name.trim().startsWith("ม." + fixedFormData.target_level)
-        );
+      targetRooms = classrooms.filter(r =>
+        r.name.trim().startsWith(fixedFormData.target_level) ||
+        r.name.trim().startsWith("ม." + fixedFormData.target_level)
+      );
     }
-    if (targetRooms.length === 0) return alert(`ไม่พบห้องเรียนในระดับชั้น ${levelLabel}`);
-    const subjectName = subjects.find(s => s.id == fixedFormData.subject_id)?.name;
-    const confirmMsg = `⚠️ ยืนยันการลงวิชา "${subjectName}"\n\n - เป้าหมาย: ${levelLabel}\n - จำนวนห้อง: ${targetRooms.length} ห้อง\n - เวลา: วัน${fixedFormData.day_of_week} คาบที่ ${fixedFormData.slot_id}\n\nข้อมูลเดิมจะถูกทับ!`;
-    if (!confirm(confirmMsg)) return;
+    if (targetRooms.length === 0) return;
 
     setIsLoading(true);
     try {
-        const targetRoomIds = targetRooms.map(r => r.id);
-        if (fixedFormData.delete_old) {
-            await supabase.from("teaching_assignments").delete()
-                .eq("academic_year", termInfo.year).eq("semester", termInfo.semester)
-                .eq("day_of_week", fixedFormData.day_of_week).eq("slot_id", fixedFormData.slot_id)
-                .in("classroom_id", targetRoomIds);
-        }
+      const targetRoomIds = targetRooms.map(r => r.id);
+
+      // ลบข้อมูลเดิมในช่องนั้นก่อน
+      await supabase.from("teaching_assignments").delete()
+        .eq("academic_year", termInfo.year)
+        .eq("semester", termInfo.semester)
+        .eq("day_of_week", fixedFormData.day_of_week)
+        .eq("slot_id", fixedFormData.slot_id)
+        .in("classroom_id", targetRoomIds);
+
+      if (!isFreeMode) {
+        // โหมดวิชา: insert วิชาที่เลือกลงทุกห้อง
         const insertPayload = targetRooms.map(room => ({
-            classroom_id: room.id,
-            subject_id: fixedFormData.subject_id,
-            teacher_id: fixedFormData.teacher_id || null, 
-            day_of_week: fixedFormData.day_of_week,
-            slot_id: fixedFormData.slot_id,
-            is_locked: true,
-            major_group: fixedFormData.major_group,
-            academic_year: termInfo.year,
-            semester: termInfo.semester
+          classroom_id: room.id,
+          subject_id: fixedFormData.subject_id,
+          teacher_id: fixedFormData.teacher_id || null,
+          day_of_week: fixedFormData.day_of_week,
+          slot_id: fixedFormData.slot_id,
+          is_locked: true,
+          major_group: fixedFormData.major_group || "ทั้งหมด",
+          academic_year: termInfo.year,
+          semester: termInfo.semester,
         }));
         const { error } = await supabase.from("teaching_assignments").insert(insertPayload);
         if (error) throw error;
-        alert(`✅ ลงวิชาสำเร็จให้ ${targetRooms.length} ห้อง (${levelLabel})!`);
-        setIsFixedModalOpen(false);
-        if (selectedRoom) fetchSchedule(); 
-    } catch (err: any) { alert("เกิดข้อผิดพลาด: " + err.message); } 
-    finally { setIsLoading(false); }
+      }
+      // โหมดคาบว่าง: แค่ลบอย่างเดียว ไม่ต้อง insert อะไร
+
+      setIsFixedModalOpen(false);
+      await fetchSchedule(selectedRoom, termInfo.year, termInfo.semester);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   async function handleDelete(id: number) {
@@ -608,8 +631,8 @@ export default function ManageAssignments() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-red-100 bg-white">
-                            {structureSummary.filter(i => i.placed < i.needed).map(item => (
-                              <tr key={item.subject_id} className="hover:bg-red-50 transition-colors">
+                            {structureSummary.filter(i => i.placed < i.needed).map((item, idx) => (
+                              <tr key={`${item.subject_id}-${idx}`} className="hover:bg-red-50 transition-colors">
                                 <td className="px-4 py-2.5 font-mono text-slate-500 text-xs">{item.subject_code}</td>
                                 <td className="px-4 py-2.5 font-semibold text-slate-700">{item.subject_name}</td>
                                 <td className="px-4 py-2.5 text-slate-500 text-xs">{item.teacher_name}</td>
@@ -646,8 +669,8 @@ export default function ManageAssignments() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-green-100 bg-white">
-                            {structureSummary.filter(i => i.placed === i.needed).map(item => (
-                              <tr key={item.subject_id} className="hover:bg-green-50 transition-colors">
+                            {structureSummary.filter(i => i.placed === i.needed).map((item, idx) => (
+                              <tr key={`${item.subject_id}-${idx}`} className="hover:bg-green-50 transition-colors">
                                 <td className="px-4 py-2.5 font-mono text-slate-500 text-xs">{item.subject_code}</td>
                                 <td className="px-4 py-2.5 font-semibold text-slate-700">{item.subject_name}</td>
                                 <td className="px-4 py-2.5 text-slate-500 text-xs">{item.teacher_name}</td>
@@ -818,7 +841,42 @@ export default function ManageAssignments() {
               </div>
               <input className="w-full p-2 border rounded-xl bg-slate-50 outline-none" placeholder="กลุ่มเรียน (Option)" value={formData.major_group} onChange={e => setFormData({ ...formData, major_group: e.target.value })} />
               <label className="flex items-center gap-2"><input type="checkbox" checked={formData.is_locked} onChange={e => setFormData({ ...formData, is_locked: e.target.checked })} /> ล็อกคาบนี้</label>
-              <button onClick={handleSave} className="w-full py-2 bg-indigo-600 text-white rounded-xl font-bold mt-2">
+
+              {/* ปุ่มลงคาบว่างทั้งสัปดาห์ */}
+              <div className="pt-1 border-t border-slate-100">
+                <p className="text-[10px] text-slate-400 mb-2 font-semibold uppercase">ลงคาบว่างพร้อมกันทุกวัน</p>
+                <button
+                  onClick={async () => {
+                    if (!activeSlot || !selectedRoom) return;
+                    setIsLoading(true);
+                    const toInsert = days
+                      .filter(d => !scheduleData.some(a => a.day_of_week === d && a.slot_id === activeSlot.slotId))
+                      .map(d => ({
+                        classroom_id: selectedRoom,
+                        subject_id: formData.subject_id || null,
+                        teacher_id: formData.teacher_id || null,
+                        day_of_week: d,
+                        slot_id: activeSlot.slotId,
+                        is_locked: formData.is_locked,
+                        major_group: formData.major_group || "ทั้งหมด",
+                        academic_year: termInfo.year,
+                        semester: termInfo.semester,
+                      }));
+                    if (toInsert.length > 0) {
+                      await supabase.from("teaching_assignments").insert(toInsert);
+                    }
+                    setIsModalOpen(false);
+                    setEditingId(null);
+                    await fetchSchedule(selectedRoom, termInfo.year, termInfo.semester);
+                    setIsLoading(false);
+                  }}
+                  className="w-full py-2 bg-slate-700 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition"
+                >
+                  📅 ลงคาบ {activeSlot?.slotId} ทุกวัน (เฉพาะช่องว่าง)
+                </button>
+              </div>
+
+              <button onClick={handleSave} className="w-full py-2 bg-indigo-600 text-white rounded-xl font-bold mt-1">
                   {editingId ? 'บันทึกการแก้ไข' : 'เพิ่มคาบเรียน'}
               </button>
             </div>
@@ -826,30 +884,185 @@ export default function ManageAssignments() {
         </div>
       )}
 
-      {/* ⚙️ Modal: ลงวิชาส่วนกลาง (คงเดิม) */}
+      {/* ⚙️ Modal: ลงวิชาส่วนกลาง */}
       {isFixedModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border ring-4 ring-amber-100">
-            <div className="p-4 border-b bg-amber-50 flex justify-between items-center">
-              <div>
-                  <h3 className="font-bold text-amber-900 text-lg">⚙️ กำหนดวิชาส่วนกลาง</h3>
-              </div>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg border ring-4 ring-amber-100" style={{overflow:'visible'}}>
+            <div className="p-4 border-b bg-amber-50 flex justify-between items-center rounded-t-2xl">
+              <h3 className="font-bold text-amber-900 text-lg">⚙️ กำหนดวิชาส่วนกลาง</h3>
               <button onClick={() => setIsFixedModalOpen(false)} className="text-amber-400 hover:text-amber-600">✕</button>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase">เป้าหมาย (ระดับชั้น)</label>
-                <select className="w-full p-3 border rounded-xl bg-slate-50 font-bold text-slate-700" value={fixedFormData.target_level} onChange={e => setFixedFormData({ ...fixedFormData, target_level: e.target.value })}>
-                    <option value="all">🌍 ทุกระดับชั้น</option>
-                    {[1,2,3,4,5,6].map(lv => <option key={lv} value={lv}>ม.{lv}</option>)}
+
+            <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+
+              {/* โหมด */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">โหมด</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { value: 'subject', label: '📚 ลงวิชาเรียน', desc: 'เลือกวิชา+ครู ลงทุกห้องในชั้น' },
+                    { value: 'free', label: '🕐 คาบว่าง/กิจกรรม', desc: 'ลงคาบว่างหรือกิจกรรมพร้อมกัน' },
+                  ].map(m => (
+                    <div key={m.value}
+                      onClick={() => setFixedFormData({ ...fixedFormData, subject_id: m.value === 'free' ? '__free__' : (fixedFormData.subject_id === '__free__' ? '' : fixedFormData.subject_id) })}
+                      className={`p-3 rounded-xl border-2 cursor-pointer transition ${(m.value === 'free' ? fixedFormData.subject_id === '__free__' : fixedFormData.subject_id !== '__free__') ? 'border-amber-400 bg-amber-50' : 'border-slate-200 hover:border-amber-200'}`}>
+                      <div className="font-bold text-sm">{m.label}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{m.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* เป้าหมายระดับชั้น */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">ระดับชั้นเป้าหมาย</label>
+                <select className="w-full p-2.5 border rounded-xl bg-slate-50 font-bold text-slate-700 text-sm" value={fixedFormData.target_level} onChange={e => setFixedFormData({ ...fixedFormData, target_level: e.target.value })}>
+                  <option value="all">🌍 ทุกระดับชั้น</option>
+                  {[1,2,3,4,5,6].map(lv => <option key={lv} value={String(lv)}>ม.{lv}</option>)}
                 </select>
               </div>
-              <div className="flex gap-2 pt-2 border-t">
-                <button onClick={() => setIsFixedModalOpen(false)} className="flex-1 py-3 font-bold text-slate-400 text-sm">ยกเลิก</button>
-                <button onClick={handleSaveGlobalSubject} disabled={isLoading} className="flex-1 px-4 py-3 bg-amber-500 text-white rounded-xl font-bold shadow-lg hover:bg-amber-600 disabled:opacity-50 text-sm">
-                  {isLoading ? "กำลังประมวลผล..." : "ยืนยันลงวิชา"}
-                </button>
+
+              {/* วัน + คาบ */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">วัน</label>
+                  <select className="w-full p-2.5 border rounded-xl bg-slate-50 text-sm font-bold text-slate-700" value={fixedFormData.day_of_week} onChange={e => setFixedFormData({ ...fixedFormData, day_of_week: e.target.value })}>
+                    {days.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">คาบ</label>
+                  <select className="w-full p-2.5 border rounded-xl bg-slate-50 text-sm font-bold text-slate-700" value={fixedFormData.slot_id} onChange={e => setFixedFormData({ ...fixedFormData, slot_id: Number(e.target.value) })}>
+                    {timeSlots.filter(s => !s.isBreak).map(s => <option key={s.id} value={Number(s.id)}>คาบ {s.id} ({s.time})</option>)}
+                  </select>
+                </div>
               </div>
+
+              {/* วิชา (แสดงเฉพาะโหมดวิชา) */}
+              {fixedFormData.subject_id !== '__free__' && (
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">วิชาเรียน</label>
+                  <div className="relative">
+                    <div className="w-full p-2.5 border rounded-xl bg-slate-50 cursor-pointer flex items-center justify-between text-sm"
+                      onClick={() => setSubjectDropdownOpen(p => !p)}>
+                      <span className={fixedFormData.subject_id ? "text-slate-800" : "text-slate-400"}>
+                        {fixedFormData.subject_id
+                          ? (() => { const s = subjects.find(s => s.id === fixedFormData.subject_id); return s ? `${s.code} - ${s.name}` : "-- เลือกวิชา --"; })()
+                          : "-- เลือกวิชา --"}
+                      </span>
+                      <span className="text-slate-400 text-xs">{subjectDropdownOpen ? "▲" : "▼"}</span>
+                    </div>
+                    {subjectDropdownOpen && (
+                      <div className="absolute z-30 bottom-full mb-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                        <div className="p-2 border-b">
+                          <input autoFocus className="w-full px-3 py-1.5 text-sm border rounded-lg bg-slate-50 outline-none focus:ring-2 ring-amber-300"
+                            placeholder="🔍 ค้นหารหัสหรือชื่อวิชา..." value={subjectSearch}
+                            onChange={e => setSubjectSearch(e.target.value)} onClick={e => e.stopPropagation()} />
+                        </div>
+                        <div className="max-h-44 overflow-y-auto">
+                          <div className="px-3 py-2 text-sm text-slate-400 hover:bg-slate-50 cursor-pointer"
+                            onClick={() => { setFixedFormData({ ...fixedFormData, subject_id: "" }); setSubjectDropdownOpen(false); setSubjectSearch(""); }}>
+                            -- เลือกวิชา --
+                          </div>
+                          {subjects.filter(s => subjectSearch === "" || s.code.toLowerCase().includes(subjectSearch.toLowerCase()) || s.name.toLowerCase().includes(subjectSearch.toLowerCase()))
+                            .map(s => (
+                              <div key={s.id}
+                                className={`px-3 py-2 text-sm cursor-pointer hover:bg-amber-50 transition-colors ${fixedFormData.subject_id === s.id ? "bg-amber-50 font-bold text-amber-700" : "text-slate-700"}`}
+                                onClick={() => { setFixedFormData({ ...fixedFormData, subject_id: s.id }); setSubjectDropdownOpen(false); setSubjectSearch(""); }}>
+                                <span className="font-mono text-xs text-slate-400 mr-2">{s.code}</span>{s.name}
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ครู */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">ครูผู้สอน <span className="normal-case text-slate-300">(ถ้ามี)</span></label>
+                <div className="relative">
+                  <div className="w-full p-2.5 border rounded-xl bg-slate-50 cursor-pointer flex items-center justify-between text-sm"
+                    onClick={() => setTeacherDropdownOpen(p => !p)}>
+                    <span className={fixedFormData.teacher_id ? "text-slate-800" : "text-slate-400"}>
+                      {fixedFormData.teacher_id ? teachers.find(t => t.id === fixedFormData.teacher_id)?.full_name || "-- เลือกครู --" : "-- เลือกครู --"}
+                    </span>
+                    <span className="text-slate-400 text-xs">{teacherDropdownOpen ? "▲" : "▼"}</span>
+                  </div>
+                  {teacherDropdownOpen && (
+                    <div className="absolute z-30 bottom-full mb-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                      <div className="p-2 border-b">
+                        <input autoFocus className="w-full px-3 py-1.5 text-sm border rounded-lg bg-slate-50 outline-none focus:ring-2 ring-amber-300"
+                          placeholder="🔍 ค้นหาชื่อครู..." value={teacherSearch}
+                          onChange={e => setTeacherSearch(e.target.value)} onClick={e => e.stopPropagation()} />
+                      </div>
+                      <div className="max-h-44 overflow-y-auto">
+                        <div className="px-3 py-2 text-sm text-slate-400 hover:bg-slate-50 cursor-pointer border-b"
+                          onClick={() => { setFixedFormData({ ...fixedFormData, teacher_id: "" }); setTeacherDropdownOpen(false); setTeacherSearch(""); }}>
+                          -- ไม่ระบุครู --
+                        </div>
+                        {(() => {
+                          const filtered = teachers.filter(t => teacherSearch === "" || t.full_name.toLowerCase().includes(teacherSearch.toLowerCase()));
+                          const grouped = filtered.reduce((acc: Record<string, typeof teachers>, t) => {
+                            const dept = t.department || "ไม่ระบุกลุ่มสาระ";
+                            if (!acc[dept]) acc[dept] = [];
+                            acc[dept].push(t);
+                            return acc;
+                          }, {});
+                          return Object.entries(grouped).sort(([a],[b]) => a.localeCompare(b,'th')).map(([dept, list]) => (
+                            <div key={dept}>
+                              <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase bg-slate-50 border-y sticky top-0">{dept}</div>
+                              {list.map(t => (
+                                <div key={t.id}
+                                  className={`px-3 py-2 text-sm cursor-pointer hover:bg-amber-50 transition-colors ${fixedFormData.teacher_id === t.id ? "bg-amber-50 font-bold text-amber-700" : "text-slate-700"}`}
+                                  onClick={() => { setFixedFormData({ ...fixedFormData, teacher_id: t.id }); setTeacherDropdownOpen(false); setTeacherSearch(""); }}>
+                                  {t.full_name}
+                                </div>
+                              ))}
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* กลุ่มเรียน */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">กลุ่มเรียน / หมายเหตุ</label>
+                <input className="w-full p-2.5 border rounded-xl bg-slate-50 text-sm outline-none"
+                  placeholder="เช่น กิจกรรม, ชุมนุม, HR..."
+                  value={fixedFormData.major_group}
+                  onChange={e => setFixedFormData({ ...fixedFormData, major_group: e.target.value })} />
+              </div>
+
+              {/* สรุปเป้าหมาย */}
+              {(() => {
+                const targetRooms = fixedFormData.target_level === 'all'
+                  ? classrooms
+                  : classrooms.filter(r => r.name.trim().startsWith(fixedFormData.target_level) || r.name.trim().startsWith("ม." + fixedFormData.target_level));
+                return (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">
+                    <div className="font-bold text-amber-800">📋 สรุปการดำเนินการ</div>
+                    <div className="text-amber-700 mt-1 space-y-0.5 text-xs">
+                      <div>• ห้องเป้าหมาย: <span className="font-bold">{targetRooms.length} ห้อง</span> {fixedFormData.target_level !== 'all' && `(ม.${fixedFormData.target_level})`}</div>
+                      <div>• วัน/คาบ: <span className="font-bold">วัน{fixedFormData.day_of_week} คาบ {fixedFormData.slot_id}</span></div>
+                      <div>• ข้อมูลเดิมในช่องนั้นจะถูก<span className="font-bold text-red-500">ลบและแทนที่</span></div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+            </div>
+
+            <div className="p-4 border-t flex gap-2">
+              <button onClick={() => setIsFixedModalOpen(false)} className="flex-1 py-2.5 font-bold text-slate-400 text-sm rounded-xl hover:bg-slate-50">ยกเลิก</button>
+              <button onClick={handleSaveGlobalSubject} disabled={isLoading || (fixedFormData.subject_id !== '__free__' && !fixedFormData.subject_id)}
+                className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-xl font-bold shadow-lg hover:bg-amber-600 disabled:opacity-40 text-sm">
+                {isLoading ? "กำลังประมวลผล..." : "✅ ยืนยันลงวิชา"}
+              </button>
             </div>
           </div>
         </div>
