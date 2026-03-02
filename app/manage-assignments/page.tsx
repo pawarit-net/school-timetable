@@ -257,7 +257,7 @@ export default function ManageAssignments() {
       // 3. โหลดตารางปัจจุบัน (หลังจากลบแล้ว) เพื่อรู้ว่าช่องไหนถูกใช้แล้ว
       const { data: existing } = await supabase
         .from("teaching_assignments")
-        .select("day_of_week, slot_id, teacher_id")
+        .select("day_of_week, slot_id, teacher_id, subject_id")
         .eq("classroom_id", selectedRoom)
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester);
