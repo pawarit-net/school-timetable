@@ -470,15 +470,21 @@ export default function ManageAssignments() {
         {selectedRoom ? (
           <>
             {/* --- Main Timetable --- */}
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden overflow-x-auto">
-              <table className="w-full border-collapse min-w-[1000px]">
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <table className="w-full border-collapse table-fixed">
                 <thead className="bg-slate-50 border-b">
                   <tr>
-                    <th className="p-3 border-r font-bold w-24 sticky left-0 bg-slate-50 z-10 text-slate-500">วัน</th>
+                    <th className="p-2 border-r font-bold sticky left-0 bg-slate-50 z-10 text-slate-500 text-xs" style={{width:'5%'}}>วัน</th>
                     {timeSlots.map(s => (
-                      <th key={s.id} className="p-2 border-r last:border-0 text-center w-[10%]">
-                        <div className="text-xs font-bold text-indigo-900 uppercase">{s.label}</div>
-                        <div className="text-[10px] text-slate-400 font-normal">{s.time}</div>
+                      <th key={s.id} className="border-r last:border-0 text-center py-1 px-0.5" style={{width: s.isBreak ? '2%' : '9%'}}>
+                        {s.isBreak ? (
+                          <div className="text-[8px] text-slate-400 leading-tight">{s.label}</div>
+                        ) : (
+                          <>
+                            <div className="text-[10px] font-bold text-indigo-900">{s.label}</div>
+                            <div className="text-[8px] text-slate-400 font-normal leading-tight">{s.time}</div>
+                          </>
+                        )}
                       </th>
                     ))}
                   </tr>
@@ -486,14 +492,16 @@ export default function ManageAssignments() {
                 <tbody className="divide-y">
                   {days.map(day => (
                     <tr key={day} className="hover:bg-slate-50/50 transition">
-                      <td className="p-3 border-r bg-slate-50 font-bold text-center text-slate-600 sticky left-0 z-10">{day}</td>
+                      <td className="p-1 border-r bg-slate-50 font-bold text-center text-slate-600 sticky left-0 z-10 text-xs">{day}</td>
                       {timeSlots.map(slot => {
-                        if (slot.isBreak) return <td key={slot.id} className="bg-slate-100/50 border-r text-[10px] text-slate-400 text-center italic">พัก</td>;
+                        if (slot.isBreak) return (
+                          <td key={slot.id} className="bg-slate-100/50 border-r" />
+                        );
                         
                         const matches = scheduleData.filter(a => a.day_of_week === day && a.slot_id === Number(slot.id));
                         
                         return (
-                          <td key={slot.id} className="border-r p-1 h-28 align-top relative group" 
+                          <td key={slot.id} className="border-r p-0.5 align-top relative group" style={{height:'100px'}}
                               onClick={() => { 
                                 if (matches.length === 0) {
                                     setEditingId(null);
@@ -507,26 +515,26 @@ export default function ManageAssignments() {
                             
                             {matches.length === 0 && (
                                <div className="w-full h-full flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition">
-                                  <span className="text-indigo-400 text-xs bg-indigo-50 px-2 py-1 rounded-full">+ เพิ่ม</span>
+                                  <span className="text-indigo-400 text-[10px] bg-indigo-50 px-1.5 py-0.5 rounded-full">+</span>
                                </div>
                             )}
 
                             {matches.map((m) => (
                               <div key={m.id} 
                                 onClick={(e) => { e.stopPropagation(); handleEditClick(m); }}
-                                className={`h-full flex flex-col p-2 rounded-lg border shadow-sm text-xs relative mb-1 cursor-pointer hover:scale-[1.02] transition-all
+                                className={`h-full flex flex-col p-1.5 rounded-lg border shadow-sm relative mb-0.5 cursor-pointer hover:scale-[1.02] transition-all overflow-hidden
                                   ${m.is_locked ? 'bg-amber-50 border-amber-200 ring-1 ring-amber-300' : 'bg-white border-indigo-100'}`}>
                                 
                                 <button onClick={(e) => { e.stopPropagation(); if(m.id) handleDelete(m.id); }} 
-                                    className="absolute -top-1.5 -right-1.5 bg-red-100 text-red-600 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-200 shadow-sm z-20">
+                                    className="absolute top-0.5 right-0.5 bg-red-100 text-red-600 rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-200 shadow-sm z-20 text-[10px] leading-none">
                                     ×
                                 </button>
 
-                                <div className="font-bold text-indigo-900 line-clamp-2">{m.subjects?.name}</div>
-                                <div className="text-slate-500 mt-1 truncate">{m.teachers?.full_name || "-"}</div>
-                                <div className="mt-auto pt-2 flex justify-between items-center text-[10px] text-slate-400 border-t border-slate-100">
-                                    <span className="font-mono bg-slate-100 px-1 rounded">{m.subjects?.code}</span>
-                                    {m.is_locked && <span>🔒</span>}
+                                <div className="font-bold text-indigo-900 line-clamp-2 text-[10px] leading-tight">{m.subjects?.name}</div>
+                                <div className="text-slate-500 truncate text-[9px] mt-0.5">{m.teachers?.full_name || "-"}</div>
+                                <div className="mt-auto pt-1 flex justify-between items-center border-t border-slate-100">
+                                    <span className="font-mono bg-slate-100 px-1 rounded text-[8px] text-slate-400">{m.subjects?.code}</span>
+                                    {m.is_locked && <span className="text-[9px]">🔒</span>}
                                 </div>
                               </div>
                             ))}
