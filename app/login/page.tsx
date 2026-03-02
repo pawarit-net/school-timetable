@@ -18,11 +18,8 @@ export default function LoginPage() {
     const cleanEmail = email.trim();
     const cleanPassword = password.trim();
 
-    // 🔍 DEBUG 1: ดูว่าเราส่งค่าอะไรไป
-    console.log("🟢 1. กำลังค้นหา:", { cleanEmail, cleanPassword });
-
     try {
-        // Step 1: ค้นหาข้อมูล
+        // Step 1: ตรวจสอบว่ามีครูในระบบ
         const { data: teacher, error: dbError } = await supabase
             .from("teachers")
             .select("*")
@@ -30,22 +27,10 @@ export default function LoginPage() {
             .eq("teacher_code", cleanPassword) 
             .maybeSingle();
 
-        // 🔍 DEBUG 2: ดูผลลัพธ์จาก Supabase
-        console.log("🟡 2. ผลลัพธ์จาก DB:", teacher);
-        console.log("🔴 3. Error จาก DB (ถ้ามี):", dbError);
+        if (dbError) throw new Error("เกิดข้อผิดพลาดจากฐานข้อมูล: " + dbError.message);
+        if (!teacher) throw new Error("อีเมลหรือรหัสประจำตัวไม่ถูกต้อง");
 
-        if (dbError) {
-            // ถ้าเป็น error เกี่ยวกับ policy แสดงว่าลืมปิด RLS
-            console.error("Database Error Detail:", dbError.message);
-            throw new Error("เกิดข้อผิดพลาดจากฐานข้อมูล: " + dbError.message);
-        }
-
-        if (!teacher) {
-            // ถ้าไม่เจอ teacher แสดงว่า Email หรือ Password ไม่ตรง หรือติด RLS
-            throw new Error("ไม่พบข้อมูล! (ผลลัพธ์เป็น null) กรุณาเช็ค RLS หรือ ตัวสะกด");
-        }
-
-        // Step 2: Login Auth
+        // Step 2: ลอง Login ก่อน
         const { error: signInError } = await supabase.auth.signInWithPassword({
             email: cleanEmail,
             password: cleanPassword,
@@ -56,9 +41,8 @@ export default function LoginPage() {
             return;
         }
 
-        // Step 3: Auto Sign Up
+        // Step 3: ถ้า Login ไม่ได้ → สมัครก่อน แล้ว Login ต่อทันที
         if (signInError.message.includes("Invalid login credentials") || signInError.message.includes("Email not confirmed")) {
-            console.log("🔵 4. กำลังสมัครสมาชิกอัตโนมัติ...");
             const { error: signUpError } = await supabase.auth.signUp({
                 email: cleanEmail,
                 password: cleanPassword,
@@ -71,13 +55,21 @@ export default function LoginPage() {
             });
 
             if (signUpError) throw signUpError;
+
+            // ✅ Sign in ทันทีหลัง sign up สำเร็จ
+            const { error: signInAfterSignUp } = await supabase.auth.signInWithPassword({
+                email: cleanEmail,
+                password: cleanPassword,
+            });
+
+            if (signInAfterSignUp) throw signInAfterSignUp;
+
             router.push("/");
         } else {
             throw signInError;
         }
 
     } catch (err: any) {
-        console.error("❌ Catch Error:", err);
         setErrorMsg(err.message);
     } finally {
         setLoading(false);
@@ -90,7 +82,7 @@ export default function LoginPage() {
         
         <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-blue-900">เข้าสู่ระบบ</h1>
-            <p className="text-gray-500 text-sm mt-2">ระบบจัดตารางสอนออนไลน์ (Debug Mode)</p>
+            <p className="text-gray-500 text-sm mt-2">ระบบจัดตารางสอนออนไลน์</p>
         </div>
         
         {errorMsg && (
