@@ -18,14 +18,27 @@ function strSimilarity(a: string, b: string): number {
   return 1 - dp[m][n] / Math.max(m, n);
 }
 
+// --- แก้ไขฟังก์ชันนี้เพื่อแก้ Build Error ---
 function fuzzyGroupTeachers(teachers: any[], threshold = 0.8): [string, any[]][] {
   const canonicals: string[] = [];
   const groups: Record<string, any[]> = {};
+  
   for (const t of teachers) {
     const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
-    let matched = canonicals.find(c => strSimilarity(c, dept) >= threshold);
-    if (!matched) { matched = dept; canonicals.push(dept); groups[dept] = []; }
-    groups[matched].push(t);
+    // ค้นหาชื่อกลุ่มที่ใกล้เคียง
+    const found = canonicals.find(c => strSimilarity(c, dept) >= threshold);
+    
+    // กำหนด Key ที่จะใช้ (ถ้าไม่เจอให้ใช้ชื่อ dept ของตัวเอง)
+    const matchedKey = found || dept;
+
+    if (!found) { 
+      // ถ้าไม่เคยมีกลุ่มนี้ใน list ให้เพิ่มเข้าไปใหม่
+      canonicals.push(dept); 
+      groups[dept] = []; 
+    }
+    
+    // ใส่ข้อมูล teacher ลงในกลุ่ม (TypeScript จะไม่บ่นเรื่อง undefined แล้ว)
+    groups[matchedKey].push(t);
   }
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, 'th'));
 }
@@ -37,7 +50,7 @@ export default function CourseStructurePage() {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [editingCourse, setEditingCourse] = useState<any>(null); // null = add, object = edit
+  const [editingCourse, setEditingCourse] = useState<any>(null); 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Filters
@@ -87,11 +100,9 @@ export default function CourseStructurePage() {
     totalPeriods: courses.reduce((sum, c) => sum + (c.periods_per_week || 0), 0),
   }), [courses]);
 
-  // Unique values for filter dropdowns
   const filterYears = useMemo(() => [...new Set(courses.map(c => c.academic_year))].sort().reverse(), [courses]);
   const filterTerms = useMemo(() => [...new Set(courses.map(c => c.term))].sort(), [courses]);
 
-  // Filtered courses
   const filteredCourses = useMemo(() => courses.filter(c => {
     if (filterYear !== "all" && c.academic_year !== filterYear) return false;
     if (filterTerm !== "all" && String(c.term) !== String(filterTerm)) return false;
@@ -144,7 +155,6 @@ export default function CourseStructurePage() {
       setLoading(true);
 
       if (editingCourse) {
-        // Update mode
         const { error: updateError } = await supabase.from("course_structures").update({
           subject_id: parseInt(formData.subject_id),
           periods_per_week: parseInt(formData.periods),
@@ -153,14 +163,12 @@ export default function CourseStructurePage() {
         }).eq("id", editingCourse.id);
         if (updateError) throw updateError;
 
-        // Update teacher: delete old, insert new
         await supabase.from("course_teachers").delete().eq("course_structure_id", editingCourse.id);
         await supabase.from("course_teachers").insert({
           course_structure_id: editingCourse.id,
           teacher_id: parseInt(formData.teacher_id),
         });
       } else {
-        // Insert mode (multiple rooms)
         await Promise.all(formData.selectedClassrooms.map(async (classroomId) => {
           const { data: courseData, error: courseError } = await supabase.from("course_structures").insert({
             classroom_id: parseInt(classroomId),
@@ -370,7 +378,6 @@ export default function CourseStructurePage() {
 
             <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
 
-              {/* ห้องเรียน — ซ่อนถ้า edit mode */}
               {!editingCourse && (
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">
@@ -401,7 +408,6 @@ export default function CourseStructurePage() {
                 </div>
               )}
 
-              {/* วิชา */}
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">วิชา</label>
                 <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
@@ -411,13 +417,12 @@ export default function CourseStructurePage() {
                 </select>
               </div>
 
-              {/* ครู */}
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">ครูผู้สอน</label>
                 <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
                   value={formData.teacher_id} onChange={e => setFormData({ ...formData, teacher_id: e.target.value })} required>
                   <option value="">-- เลือกครู --</option>
-                  {teacherGrouped.map(([dept, list]: [string, any]) => (
+                  {teacherGrouped.map(([dept, list]) => (
                     <optgroup key={dept} label={`📂 ${dept}`}>
                       {list.map((t: any) => <option key={t.id} value={t.id}>{getTeacherName(t)}{t.nickname ? ` (${t.nickname})` : ""}</option>)}
                     </optgroup>
@@ -425,7 +430,6 @@ export default function CourseStructurePage() {
                 </select>
               </div>
 
-              {/* Details */}
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1">เทอม</label>
