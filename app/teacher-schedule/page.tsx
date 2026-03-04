@@ -1,27 +1,29 @@
 "use client";
-import { useState, useEffect } from "react";
-import { supabase } from '@/lib/supabaseClient'
+import { useState, useEffect, useRef } from "react";
+import { supabase } from '@/lib/supabaseClient';
 import Link from "next/link";
 
 export default function TeacherSchedule() {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [selectedTeacher, setSelectedTeacher] = useState("");
   const [scheduleData, setScheduleData] = useState<any[]>([]);
-  
-  // State สำหรับ Modal และการตั้งค่า
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeSlot, setActiveSlot] = useState<{day: string, slotId: number} | null>(null);
   const [meetingNote, setMeetingNote] = useState("ประชุมหมวด/PLC");
-  
-  // State สำหรับ ปี และ เทอม
-  const [academicYear, setAcademicYear] = useState(2569); 
-  const [semester, setSemester] = useState("1");
 
-  // State ใหม่: สำหรับเลือกขอบเขต
-  const [targetScope, setTargetScope] = useState<'current' | 'department' | 'all'>('current'); 
+  const [academicYear, setAcademicYear] = useState<number | null>(null);
+  const [semester, setSemester] = useState<string | null>(null);
+  const settingsLoaded = useRef(false);
+
+  const [targetScope, setTargetScope] = useState<'current' | 'department' | 'all'>('current');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // ข้อมูลเวลา
+  // Confirm modal แทน confirm()
+  const [confirmModal, setConfirmModal] = useState<{open: boolean, msg: string, onOk: () => void} | null>(null);
+  // Toast แทน alert()
+  const [toast, setToast] = useState<{msg: string, type: 'success' | 'error'} | null>(null);
+
   const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
   const timeSlots = [
     { id: 1, label: "คาบ 1", time: "08:30 - 09:20" },
@@ -36,147 +38,142 @@ export default function TeacherSchedule() {
     { id: 7, label: "คาบ 7", time: "14:50 - 15:40" },
   ];
 
+  function showToast(msg: string, type: 'success' | 'error' = 'success') {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }
+
+  function showConfirm(msg: string, onOk: () => void) {
+    setConfirmModal({ open: true, msg, onOk });
+  }
+
   useEffect(() => {
     loadInitialData();
   }, []);
 
+  // fetch เฉพาะหลัง settings โหลดแล้วเท่านั้น
   useEffect(() => {
-    if (selectedTeacher) fetchSchedule();
-    else setScheduleData([]);
+    if (!settingsLoaded.current) return;
+    if (selectedTeacher && academicYear !== null && semester !== null) {
+      fetchSchedule(selectedTeacher, academicYear, semester);
+    } else {
+      setScheduleData([]);
+    }
   }, [selectedTeacher, academicYear, semester]);
 
   async function loadInitialData() {
-    // แก้ไข 1: เรียงตามหมวดก่อน แล้วค่อยเรียงตามชื่อ
     const { data: tchs } = await supabase
-        .from("teachers")
-        .select("*")
-        .order("department", { ascending: true }) 
-        .order("full_name", { ascending: true });
-        
+      .from("teachers")
+      .select("*")
+      .order("department", { ascending: true })
+      .order("full_name", { ascending: true });
     if (tchs) setTeachers(tchs);
 
-    // โหลดค่าปีการศึกษาปัจจุบันจาก Settings
-    const { data: settings } = await supabase.from("academic_settings").select("*").eq("id", 1).single();
-    if (settings) {
-        setAcademicYear(settings.year);
-        setSemester(settings.semester);
-    }
+    const { data: settings } = await supabase
+      .from("academic_settings")
+      .select("*")
+      .eq("id", 1)
+      .single();
+
+    // set ค่าจาก DB โดยตรง
+    const yr = settings?.year ?? 2569;
+    const sm = String(settings?.semester ?? "1");
+    setAcademicYear(yr);
+    setSemester(sm);
+    settingsLoaded.current = true;
   }
 
-  async function fetchSchedule() {
+  async function fetchSchedule(teacherId: string, year: number, sem: string) {
     const { data } = await supabase
       .from("teaching_assignments")
-      .select(`
-        *, 
-        subjects(name, code), 
-        classrooms(name)
-      `)
-      .eq("teacher_id", selectedTeacher)
-      .eq("academic_year", academicYear)
-      .eq("semester", semester);
-
+      .select(`*, subjects(name, code), classrooms(name)`)
+      .eq("teacher_id", teacherId)
+      .eq("academic_year", year)
+      .eq("semester", sem);
     if (data) setScheduleData(data);
   }
 
-  // --- Logic สำหรับจัดกลุ่มหมวดวิชา (เตรียมข้อมูลสำหรับแสดงผล) ---
-  // หาหมวดทั้งหมดที่ไม่ซ้ำกัน
   const uniqueDepartments = Array.from(new Set(teachers.map(t => t.department || "ไม่ระบุหมวด")));
 
-  // --- ฟังก์ชัน 1: ล็อกคาบประชุม ---
   async function handleSetMeeting() {
-    if (!activeSlot || !selectedTeacher) return;
+    if (!activeSlot || !selectedTeacher || academicYear === null || semester === null) return;
     setIsProcessing(true);
-
     try {
       let teacherIdsToUpdate: any[] = [];
-
-      // A. คำนวณรายชื่อครูที่จะโดนล็อก
       if (targetScope === 'current') {
         teacherIdsToUpdate = [selectedTeacher];
-      } 
-      else if (targetScope === 'all') {
+      } else if (targetScope === 'all') {
         teacherIdsToUpdate = teachers.map(t => t.id);
-      } 
-      else if (targetScope === 'department') {
+      } else if (targetScope === 'department') {
         const currentTeacherInfo = teachers.find(t => String(t.id) === String(selectedTeacher));
-        
         if (currentTeacherInfo?.department) {
-           teacherIdsToUpdate = teachers
-             .filter(t => t.department === currentTeacherInfo.department)
-             .map(t => t.id);
+          teacherIdsToUpdate = teachers
+            .filter(t => t.department === currentTeacherInfo.department)
+            .map(t => t.id);
         } else {
-           alert("ครูท่านนี้ไม่ได้ระบุหมวดวิชา ไม่สามารถใช้ฟังก์ชันนี้ได้");
-           setIsProcessing(false);
-           return;
+          showToast("ครูท่านนี้ไม่ได้ระบุหมวดวิชา", "error");
+          setIsProcessing(false);
+          return;
         }
       }
 
-      const confirmMsg = targetScope === 'current' 
-        ? "ยืนยันการล็อกคาบนี้?" 
-        : `⚠️ คำเตือน: คุณกำลังจะล็อกคาบนี้ให้กับครูจำนวน ${teacherIdsToUpdate.length} ท่าน\nข้อมูลเก่าในคาบนี้ของทุกคนจะถูกลบ! ยืนยันหรือไม่?`;
+      const confirmMsg = targetScope === 'current'
+        ? "ยืนยันการล็อกคาบนี้?"
+        : `⚠️ จะล็อกคาบนี้ให้ครู ${teacherIdsToUpdate.length} ท่าน\nข้อมูลเก่าจะถูกลบ ยืนยัน?`;
 
-      if (!confirm(confirmMsg)) {
+      showConfirm(confirmMsg, async () => {
+        setConfirmModal(null);
+        await supabase
+          .from("teaching_assignments")
+          .delete()
+          .in("teacher_id", teacherIdsToUpdate)
+          .eq("day_of_week", activeSlot.day)
+          .eq("slot_id", activeSlot.slotId)
+          .eq("academic_year", academicYear)
+          .eq("semester", semester);
+
+        const newAssignments = teacherIdsToUpdate.map(tId => ({
+          teacher_id: tId,
+          day_of_week: activeSlot.day,
+          slot_id: activeSlot.slotId,
+          academic_year: academicYear,
+          semester: semester,
+          activity_type: 'meeting',
+          note: meetingNote,
+          is_locked: true
+        }));
+
+        const { error } = await supabase.from("teaching_assignments").insert(newAssignments);
+        if (error) throw error;
+
+        showToast(`✅ ล็อกคาบให้ครู ${teacherIdsToUpdate.length} ท่านแล้ว`);
+        setIsModalOpen(false);
+        fetchSchedule(selectedTeacher, academicYear, semester);
         setIsProcessing(false);
-        return;
-      }
-
-      // B. ลบข้อมูลเก่า
-      await supabase
-        .from("teaching_assignments")
-        .delete()
-        .in("teacher_id", teacherIdsToUpdate)
-        .eq("day_of_week", activeSlot.day)
-        .eq("slot_id", activeSlot.slotId)
-        .eq("academic_year", academicYear)
-        .eq("semester", semester);
-
-      // C. สร้างข้อมูลใหม่
-      const newAssignments = teacherIdsToUpdate.map(tId => ({
-        teacher_id: tId,
-        day_of_week: activeSlot.day,
-        slot_id: activeSlot.slotId,
-        academic_year: academicYear,
-        semester: semester,
-        activity_type: 'meeting',
-        note: meetingNote,
-        is_locked: true
-      }));
-
-      const { error } = await supabase.from("teaching_assignments").insert(newAssignments);
-
-      if (error) throw error;
-
-      alert(`✅ บันทึกสำเร็จ! ล็อกคาบให้ครู ${teacherIdsToUpdate.length} ท่านแล้ว`);
-      setIsModalOpen(false);
-      fetchSchedule(); 
-
+      });
     } catch (err: any) {
-      alert("เกิดข้อผิดพลาด: " + err.message);
-    } finally {
+      showToast("เกิดข้อผิดพลาด: " + err.message, "error");
       setIsProcessing(false);
     }
   }
 
-  // --- ฟังก์ชัน 2: ปล่อยว่าง ---
   async function handleMakeFree() {
-    if (!activeSlot) return;
-    
+    if (!activeSlot || academicYear === null || semester === null) return;
     let teacherIdsToDelete: any[] = [];
-
     if (targetScope === 'current') {
-        teacherIdsToDelete = [selectedTeacher];
+      teacherIdsToDelete = [selectedTeacher];
     } else if (targetScope === 'all') {
-        teacherIdsToDelete = teachers.map(t => t.id);
+      teacherIdsToDelete = teachers.map(t => t.id);
     } else if (targetScope === 'department') {
-         const currentTeacherInfo = teachers.find(t => String(t.id) === String(selectedTeacher));
-         if (currentTeacherInfo?.department) {
-            teacherIdsToDelete = teachers.filter(t => t.department === currentTeacherInfo.department).map(t => t.id);
-         }
+      const cur = teachers.find(t => String(t.id) === String(selectedTeacher));
+      if (cur?.department) {
+        teacherIdsToDelete = teachers.filter(t => t.department === cur.department).map(t => t.id);
+      }
     }
 
-    if (!confirm(`ต้องการลบ/เคลียร์ช่องนี้ ให้เป็นคาบว่าง (${targetScope === 'current' ? 'คนเดียว' : 'หลายคน'}) ใช่หรือไม่?`)) return;
-
-    await supabase
+    showConfirm(`เคลียร์คาบนี้ให้ว่าง (${targetScope === 'current' ? 'คนเดียว' : `${teacherIdsToDelete.length} คน`})?`, async () => {
+      setConfirmModal(null);
+      await supabase
         .from("teaching_assignments")
         .delete()
         .in("teacher_id", teacherIdsToDelete)
@@ -184,80 +181,87 @@ export default function TeacherSchedule() {
         .eq("slot_id", activeSlot.slotId)
         .eq("academic_year", academicYear)
         .eq("semester", semester);
+      setIsModalOpen(false);
+      fetchSchedule(selectedTeacher, academicYear, semester);
+    });
+  }
 
-    setIsModalOpen(false);
-    fetchSchedule();
+  if (academicYear === null || semester === null) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-400">กำลังโหลดข้อมูล...</div>;
   }
 
   return (
     <div className="min-h-screen bg-gray-50 p-8 text-black">
       <div className="max-w-7xl mx-auto">
-        
+
+        {/* Toast */}
+        {toast && (
+          <div className={`fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium transition-all ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`}>
+            {toast.msg}
+          </div>
+        )}
+
+        {/* Confirm Modal */}
+        {confirmModal?.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+              <p className="text-slate-700 text-sm whitespace-pre-line">{confirmModal.msg}</p>
+              <div className="flex gap-3">
+                <button onClick={() => setConfirmModal(null)} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm hover:bg-slate-50">ยกเลิก</button>
+                <button onClick={confirmModal.onOk} className="flex-1 py-2.5 rounded-xl bg-orange-500 text-white text-sm font-bold hover:bg-orange-600">ยืนยัน</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-800">👤 ตารางสอนรายบุคคล (Teacher View)</h1>
-                <p className="text-gray-500 text-sm mt-1">จัดการคาบสอน กิจกรรม และล็อกเวลาประชุมของครู</p>
-            </div>
-            <Link href="/" className="bg-white border px-4 py-2 rounded-lg hover:bg-gray-100 shadow-sm transition">
-                ⬅ กลับหน้าหลัก
-            </Link>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">👤 ตารางสอนรายบุคคล</h1>
+            <p className="text-gray-500 text-sm mt-1">จัดการคาบสอน กิจกรรม และล็อกเวลาประชุมของครู</p>
+          </div>
+          <Link href="/" className="bg-white border px-4 py-2 rounded-lg hover:bg-gray-100 shadow-sm transition">⬅ กลับหน้าหลัก</Link>
         </div>
 
         {/* Filters Bar */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border mb-6 flex flex-wrap gap-4 items-end">
-          {/* เลือกครู (แก้ไขส่วนนี้) */}
           <div className="flex-1 min-w-[200px]">
             <label className="block text-xs font-bold text-gray-400 uppercase mb-2">เลือกครูผู้สอน</label>
-            <select 
-                className="w-full p-3 border-2 rounded-xl bg-gray-50 outline-none focus:border-purple-500 transition"
-                value={selectedTeacher}
-                onChange={(e) => setSelectedTeacher(e.target.value)}
-            >
-                <option value="">-- เลือกรายชื่อครู --</option>
-                
-                {/* วนลูปตามหมวดวิชาเพื่อสร้าง OptGroup */}
-                {uniqueDepartments.map((dept: any) => (
-                    <optgroup key={dept} label={dept}>
-                        {teachers
-                            .filter(t => (t.department || "ไม่ระบุหมวด") === dept)
-                            .map(t => (
-                                <option key={t.id} value={t.id}>
-                                    {t.full_name}
-                                </option>
-                            ))
-                        }
-                    </optgroup>
-                ))}
-
+            <select className="w-full p-3 border-2 rounded-xl bg-gray-50 outline-none focus:border-purple-500 transition"
+              value={selectedTeacher} onChange={(e) => setSelectedTeacher(e.target.value)}>
+              <option value="">-- เลือกรายชื่อครู --</option>
+              {uniqueDepartments.map((dept: any) => (
+                <optgroup key={dept} label={dept}>
+                  {teachers.filter(t => (t.department || "ไม่ระบุหมวด") === dept).map(t => (
+                    <option key={t.id} value={t.id}>{t.full_name}</option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </div>
-          
-          {/* เลือกปี */}
           <div className="w-32">
-             <label className="block text-xs font-bold text-gray-400 uppercase mb-2">ปีการศึกษา</label>
-             <input 
-                 type="number" 
-                 value={academicYear} 
-                 onChange={(e)=>setAcademicYear(Number(e.target.value))} 
-                 className="w-full p-3 border rounded-xl bg-gray-50 text-center font-bold"
-             />
+            <label className="block text-xs font-bold text-gray-400 uppercase mb-2">ปีการศึกษา</label>
+            <input type="number" value={academicYear}
+              onChange={(e) => setAcademicYear(Number(e.target.value))}
+              className="w-full p-3 border rounded-xl bg-gray-50 text-center font-bold" />
           </div>
-
-          {/* เลือกเทอม */}
           <div className="w-32">
-             <label className="block text-xs font-bold text-gray-400 uppercase mb-2">เทอม</label>
-             <select value={semester} onChange={(e)=>setSemester(e.target.value)} className="w-full p-3 border rounded-xl bg-gray-50 font-bold">
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="Summer">Summer</option>
-             </select>
+            <label className="block text-xs font-bold text-gray-400 uppercase mb-2">เทอม</label>
+            <select value={semester} onChange={(e) => setSemester(e.target.value)} className="w-full p-3 border rounded-xl bg-gray-50 font-bold">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="Summer">Summer</option>
+            </select>
+          </div>
+          {/* แสดงปี/เทอมที่กำลังดูอยู่ */}
+          <div className="bg-indigo-50 px-4 py-3 rounded-xl border border-indigo-100 text-indigo-700 text-sm font-medium">
+            📅 ปี {academicYear} เทอม {semester}
           </div>
         </div>
 
         {/* Schedule Table */}
         {selectedTeacher ? (
-          <div className="bg-white rounded-3xl border shadow-lg overflow-hidden animate-in fade-in duration-300">
+          <div className="bg-white rounded-3xl border shadow-lg overflow-hidden">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-gray-100 border-b">
@@ -276,27 +280,21 @@ export default function TeacherSchedule() {
                     <td className="p-4 border-r bg-gray-50 font-bold text-center text-gray-700">{day}</td>
                     {timeSlots.map(slot => {
                       if (slot.isBreak) return <td key={slot.id} className="bg-gray-50 border-r text-[10px] text-gray-300 text-center italic">พัก</td>;
-                      
                       const match = scheduleData.find(a => a.day_of_week === day && a.slot_id === slot.id);
-                      
-                      let cellClass = "bg-white hover:bg-gray-50"; 
+                      let cellClass = "bg-white hover:bg-gray-50";
                       if (match) {
-                        if (match.activity_type === 'meeting') cellClass = "bg-orange-100 hover:bg-orange-200 ring-inset ring-2 ring-orange-200"; 
-                        else cellClass = "bg-blue-50 hover:bg-blue-100 ring-inset ring-2 ring-blue-100"; 
+                        if (match.activity_type === 'meeting') cellClass = "bg-orange-100 hover:bg-orange-200 ring-inset ring-2 ring-orange-200";
+                        else cellClass = "bg-blue-50 hover:bg-blue-100 ring-inset ring-2 ring-blue-100";
                       }
-
                       return (
-                        <td 
-                          key={slot.id} 
+                        <td key={slot.id}
                           className={`border-r p-2 h-28 text-center cursor-pointer transition relative group ${cellClass}`}
                           onClick={() => {
-                            setActiveSlot({day, slotId: Number(slot.id)});
-                            setTargetScope('current'); 
-                            if (match?.activity_type === 'meeting') setMeetingNote(match.note || "ประชุม");
-                            else setMeetingNote("ประชุมหมวด/PLC");
+                            setActiveSlot({ day, slotId: Number(slot.id) });
+                            setTargetScope('current');
+                            setMeetingNote(match?.activity_type === 'meeting' ? (match.note || "ประชุม") : "ประชุมหมวด/PLC");
                             setIsModalOpen(true);
-                          }}
-                        >
+                          }}>
                           {match ? (
                             match.activity_type === 'meeting' ? (
                               <div className="flex flex-col items-center justify-center h-full text-orange-800">
@@ -315,7 +313,7 @@ export default function TeacherSchedule() {
                             )
                           ) : (
                             <div className="h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                                <span className="text-gray-300 text-2xl">+</span>
+                              <span className="text-gray-300 text-2xl">+</span>
                             </div>
                           )}
                         </td>
@@ -327,100 +325,59 @@ export default function TeacherSchedule() {
             </table>
           </div>
         ) : (
-            <div className="text-center py-20 text-gray-400 bg-gray-50 rounded-3xl border border-dashed">
-                เลือกครูผู้สอนเพื่อเริ่มจัดการตาราง
-            </div>
+          <div className="text-center py-20 text-gray-400 bg-gray-50 rounded-3xl border border-dashed">
+            เลือกครูผู้สอนเพื่อเริ่มจัดการตาราง
+          </div>
         )}
 
-        {/* --- Modal จัดการคาบ --- */}
+        {/* Modal จัดการคาบ */}
         {isModalOpen && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-              
               <h3 className="text-lg font-bold mb-4 text-gray-800 border-b pb-3 flex justify-between items-center">
                 <span>จัดการตารางเวลา</span>
                 <span className="text-xs font-normal bg-gray-100 px-2 py-1 rounded text-gray-500">{activeSlot?.day} คาบ {activeSlot?.slotId}</span>
               </h3>
-
               <div className="flex flex-col gap-4">
-                
-                {/* Input ชื่อกิจกรรม */}
                 <div>
-                   <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อกิจกรรม / ประชุม</label>
-                   <input 
-                      type="text" 
-                      className="w-full border p-2 rounded-lg text-sm outline-none bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-200 transition"
-                      placeholder="เช่น ประชุมหมวด, อบรม"
-                      value={meetingNote}
-                      onChange={(e) => setMeetingNote(e.target.value)}
-                    />
+                  <label className="text-xs font-bold text-gray-500 mb-1 block">ชื่อกิจกรรม / ประชุม</label>
+                  <input type="text"
+                    className="w-full border p-2 rounded-lg text-sm outline-none bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-200 transition"
+                    placeholder="เช่น ประชุมหมวด, อบรม"
+                    value={meetingNote} onChange={(e) => setMeetingNote(e.target.value)} />
                 </div>
-
-                {/* --- ส่วนเลือกขอบเขต --- */}
                 <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-                    <label className="text-xs font-bold text-blue-800 block mb-2">เลือกเป้าหมายที่จะล็อก:</label>
-                    <div className="space-y-2">
-                        <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white p-1 rounded transition">
-                            <input 
-                                type="radio" name="scope" value="current" 
-                                checked={targetScope === 'current'}
-                                onChange={() => setTargetScope('current')}
-                                className="accent-blue-600"
-                            />
-                            <span>เฉพาะครูคนนี้ (คนเดียว)</span>
-                        </label>
-
-                        <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white p-1 rounded transition">
-                            <input 
-                                type="radio" name="scope" value="department" 
-                                checked={targetScope === 'department'}
-                                onChange={() => setTargetScope('department')}
-                                className="accent-blue-600"
-                            />
-                            <span>ทั้งหมวดสาระฯ เดียวกัน</span>
-                        </label>
-
-                        <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white p-1 rounded transition">
-                            <input 
-                                type="radio" name="scope" value="all" 
-                                checked={targetScope === 'all'}
-                                onChange={() => setTargetScope('all')}
-                                className="accent-red-600"
-                            />
-                            <span className={targetScope === 'all' ? "font-bold text-red-600" : ""}>ครูทุกคน (ทั้งโรงเรียน) ⚠️</span>
-                        </label>
-                    </div>
+                  <label className="text-xs font-bold text-blue-800 block mb-2">เลือกเป้าหมายที่จะล็อก:</label>
+                  <div className="space-y-2">
+                    {[
+                      { value: 'current', label: 'เฉพาะครูคนนี้ (คนเดียว)', accent: 'accent-blue-600' },
+                      { value: 'department', label: 'ทั้งหมวดสาระฯ เดียวกัน', accent: 'accent-blue-600' },
+                      { value: 'all', label: 'ครูทุกคน (ทั้งโรงเรียน) ⚠️', accent: 'accent-red-600' },
+                    ].map(opt => (
+                      <label key={opt.value} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white p-1 rounded transition">
+                        <input type="radio" name="scope" value={opt.value}
+                          checked={targetScope === opt.value}
+                          onChange={() => setTargetScope(opt.value as any)}
+                          className={opt.accent} />
+                        <span className={targetScope === 'all' && opt.value === 'all' ? "font-bold text-red-600" : ""}>{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-
-                {/* ปุ่ม Action */}
                 <div className="flex gap-2 pt-2">
-                    <button 
-                      onClick={handleSetMeeting}
-                      disabled={isProcessing}
-                      className="flex-1 bg-orange-500 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-orange-600 shadow-md active:scale-95 transition disabled:opacity-50"
-                    >
-                      {isProcessing ? "กำลังบันทึก..." : "🔒 ล็อกเวลา"}
-                    </button>
-
-                    <button 
-                      onClick={handleMakeFree}
-                      disabled={isProcessing}
-                      className="px-4 border border-gray-200 text-gray-500 rounded-xl hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition"
-                      title="ลบข้อมูลให้ว่าง"
-                    >
-                      🗑️
-                    </button>
+                  <button onClick={handleSetMeeting} disabled={isProcessing}
+                    className="flex-1 bg-orange-500 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-orange-600 shadow-md active:scale-95 transition disabled:opacity-50">
+                    {isProcessing ? "กำลังบันทึก..." : "🔒 ล็อกเวลา"}
+                  </button>
+                  <button onClick={handleMakeFree} disabled={isProcessing}
+                    className="px-4 border border-gray-200 text-gray-500 rounded-xl hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition"
+                    title="ลบข้อมูลให้ว่าง">🗑️</button>
                 </div>
-
-                <button onClick={() => setIsModalOpen(false)} className="text-xs text-center text-gray-400 hover:underline">
-                    ปิดหน้าต่าง
-                </button>
-
+                <button onClick={() => setIsModalOpen(false)} className="text-xs text-center text-gray-400 hover:underline">ปิดหน้าต่าง</button>
               </div>
             </div>
           </div>
         )}
-
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import Link from "next/link";
 
 // --- Levenshtein similarity ---
 function strSimilarity(a: string, b: string): number {
@@ -18,26 +19,20 @@ function strSimilarity(a: string, b: string): number {
   return 1 - dp[m][n] / Math.max(m, n);
 }
 
-// --- แก้ไขฟังก์ชันนี้เพื่อแก้ Build Error ---
 function fuzzyGroupTeachers(teachers: any[], threshold = 0.8): [string, any[]][] {
   const canonicals: string[] = [];
   const groups: Record<string, any[]> = {};
   
   for (const t of teachers) {
     const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
-    // ค้นหาชื่อกลุ่มที่ใกล้เคียง
     const found = canonicals.find(c => strSimilarity(c, dept) >= threshold);
-    
-    // กำหนด Key ที่จะใช้ (ถ้าไม่เจอให้ใช้ชื่อ dept ของตัวเอง)
     const matchedKey = found || dept;
 
     if (!found) { 
-      // ถ้าไม่เคยมีกลุ่มนี้ใน list ให้เพิ่มเข้าไปใหม่
       canonicals.push(dept); 
       groups[dept] = []; 
     }
     
-    // ใส่ข้อมูล teacher ลงในกลุ่ม (TypeScript จะไม่บ่นเรื่อง undefined แล้ว)
     groups[matchedKey].push(t);
   }
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, 'th'));
@@ -53,7 +48,6 @@ export default function CourseStructurePage() {
   const [editingCourse, setEditingCourse] = useState<any>(null); 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
-  // Filters
   const [filterYear, setFilterYear] = useState("all");
   const [filterTerm, setFilterTerm] = useState("all");
   const [filterRoom, setFilterRoom] = useState("all");
@@ -207,9 +201,7 @@ export default function CourseStructurePage() {
   };
 
   const getTeacherName = (t: any) => t ? (t.full_name || t.name || "ครู") : "-";
-
   const teacherGrouped = useMemo(() => fuzzyGroupTeachers(teachers, 0.8), [teachers]);
-
   const activeFiltersCount = [filterYear, filterTerm, filterRoom, filterTeacher].filter(f => f !== "all").length;
 
   return (
@@ -218,9 +210,18 @@ export default function CourseStructurePage() {
 
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">โครงสร้างรายวิชา</h1>
-            <p className="text-slate-500 text-sm mt-1">จัดการวิชาที่สอนในแต่ละห้องเรียน ครูผู้สอน และจำนวนคาบ</p>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-2 rounded-lg transition"
+              title="กลับหน้าแรก"
+            >
+              ←
+            </Link>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">โครงสร้างรายวิชา</h1>
+              <p className="text-slate-500 text-sm mt-1">จัดการวิชาที่สอนในแต่ละห้องเรียน ครูผู้สอน และจำนวนคาบ</p>
+            </div>
           </div>
           <button onClick={openAddModal} className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition shadow-sm font-medium flex items-center gap-2">
             <span>+</span> เพิ่มวิชาใหม่
@@ -465,7 +466,7 @@ export default function CourseStructurePage() {
         </div>
       )}
 
-      {/* Delete Confirm Inline Modal */}
+      {/* Delete Confirm Modal */}
       {deleteConfirmId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/30 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm border p-6 text-center space-y-4">
