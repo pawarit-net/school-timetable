@@ -21,7 +21,7 @@ function strSimilarity(a: string, b: string): number {
 
 // จัดกลุ่มครูตาม department โดย fuzzy match ≥ threshold
 function fuzzyGroupTeachers(teachers: Teacher[], threshold = 0.8): Record<string, Teacher[]> {
-  const canonicals: string[] = []; // ชื่อกลุ่มตัวแทน
+  const canonicals: string[] = [];
   const groups: Record<string, Teacher[]> = {};
 
   for (const t of teachers) {
@@ -35,6 +35,61 @@ function fuzzyGroupTeachers(teachers: Teacher[], threshold = 0.8): Record<string
     groups[matched].push(t);
   }
   return groups;
+}
+
+// --- คาบที่ "ติดกัน" จริง (ไม่มีพักยาวคั่น) ---
+// พักสั้น 5 นาที (13:50-14:00) ระหว่างคาบ 5-6 ถือว่าติดกัน
+// พักยาว 15 นาที (10:10-10:25) ระหว่างคาบ 2-3 → ไม่ติดกัน
+// พักเที่ยง (12:05-13:00) ระหว่างคาบ 4-5 → ไม่ติดกัน
+const ADJACENT_SLOT_PAIRS: [number, number][] = [
+  [1, 2], [3, 4], [5, 6], [6, 7],
+];
+function areSlotsAdjacent(slotA: number, slotB: number): boolean {
+  return ADJACENT_SLOT_PAIRS.some(
+    ([a, b]) => (a === slotA && b === slotB) || (a === slotB && b === slotA)
+  );
+}
+
+// --- ตรวจว่าวิชาอยู่ในกลุ่ม "คณิต" หรือไม่ ---
+function isMathSubject(subjectName: string): boolean {
+  return subjectName.includes("คณิต");
+}
+
+// --- ตรวจว่าจะชนกฎ "คณิตห้ามติดคาบ" ไหม ---
+// ส่งรายการวิชาในวันนั้นพร้อม slot_id มาให้ตรวจ
+function wouldViolateMathAdjacentRule(
+  newSubjectName: string,
+  newSlotId: number,
+  existingSlotsInDay: { slot_id: number; subjectName: string }[]
+): boolean {
+  if (!isMathSubject(newSubjectName)) return false;
+  return existingSlotsInDay.some(
+    e => isMathSubject(e.subjectName) && areSlotsAdjacent(newSlotId, e.slot_id)
+  );
+}
+
+// --- แมป room name → subject code prefix ---
+// ม.4 → "31", ม.5 → "32", ม.6 → "33"
+// ม.1 → "21", ม.2 → "22", ม.3 → "23"
+// คืน null = ไม่กรอง (ไม่รู้ระดับ)
+function getLevelPrefixFromRoomName(roomName: string): string | null {
+  const name = roomName.trim();
+  if (/^6|^ม\.?\s*6/.test(name)) return "33";
+  if (/^5|^ม\.?\s*5/.test(name)) return "32";
+  if (/^4|^ม\.?\s*4/.test(name)) return "31";
+  if (/^3|^ม\.?\s*3/.test(name)) return "23";
+  if (/^2|^ม\.?\s*2/.test(name)) return "22";
+  if (/^1|^ม\.?\s*1/.test(name)) return "21";
+  return null;
+}
+
+// แมป target_level string → subject code prefix
+function getLevelPrefixFromTargetLevel(level: string): string | null {
+  const map: Record<string, string> = {
+    "6": "33", "5": "32", "4": "31",
+    "3": "23", "2": "22", "1": "21",
+  };
+  return map[level] ?? null;
 }
 
 // --- Interfaces ---
@@ -104,11 +159,27 @@ export default function ManageAssignments() {
 
   const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
 
-  // จัดกลุ่มครูแบบ fuzzy — ชื่อหมวดที่คล้ายกัน ≥80% จะถูกรวมกลุ่มเดียว
+  // จัดกลุ่มครูแบบ fuzzy
   const fuzzyGroupedTeachers = useMemo(() => {
     const grouped = fuzzyGroupTeachers(teachers, 0.8);
     return Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b, 'th'));
   }, [teachers]);
+
+  // --- วิชาที่กรองตามระดับชั้นของห้องที่เลือก (modal ปกติ) ---
+  const subjectsForSelectedRoom = useMemo(() => {
+    const roomName = classrooms.find(c => c.id === selectedRoom)?.name || "";
+    const prefix = getLevelPrefixFromRoomName(roomName);
+    if (!prefix) return subjects; // ไม่รู้ระดับ → แสดงทั้งหมด
+    return subjects.filter(s => s.code.startsWith(prefix));
+  }, [subjects, classrooms, selectedRoom]);
+
+  // --- วิชาที่กรองตาม target_level (modal ส่วนกลาง) ---
+  const subjectsForFixedModal = useMemo(() => {
+    const prefix = getLevelPrefixFromTargetLevel(fixedFormData.target_level);
+    if (!prefix) return subjects; // "all" → แสดงทั้งหมด
+    return subjects.filter(s => s.code.startsWith(prefix));
+  }, [subjects, fixedFormData.target_level]);
+
   const timeSlots: TimeSlot[] = [
     { id: 1, label: "คาบ 1", time: "08:30 - 09:20" },
     { id: 2, label: "คาบ 2", time: "09:20 - 10:10" },
@@ -191,6 +262,86 @@ export default function ManageAssignments() {
 
   async function handleSave() {
     if (!formData.subject_id || !activeSlot) return;
+
+    // ตรวจกฎ "คณิตห้ามติดคาบ" ก่อน save
+    const newSubjectName = subjects.find(s => s.id === formData.subject_id)?.name || "";
+    if (isMathSubject(newSubjectName)) {
+      const slotsInDay = scheduleData
+        .filter(a => a.day_of_week === activeSlot.day && a.id !== editingId)
+        .map(a => ({ slot_id: a.slot_id, subjectName: a.subjects?.name || "" }));
+      if (wouldViolateMathAdjacentRule(newSubjectName, activeSlot.slotId, slotsInDay)) {
+        const proceed = confirm(
+          `⚠️ คำเตือน: "${newSubjectName}" จะอยู่ติดกับวิชากลุ่มคณิตอีกวิชาในคาบที่ติดกัน
+
+ต้องการลงต่อไปหรือไม่?`
+        );
+        if (!proceed) return;
+      }
+    }
+
+    // ── ตรวจ conflict ก่อน save (เฉพาะ insert ใหม่ / เปลี่ยนวัน-คาบ) ──
+    const isSlotChanging = !editingId ||
+      scheduleData.find(a => a.id === editingId)?.slot_id !== activeSlot.slotId ||
+      scheduleData.find(a => a.id === editingId)?.day_of_week !== activeSlot.day;
+
+    if (isSlotChanging) {
+      // โหลดข้อมูลทั้งหมดในวัน+คาบนั้น (ทุกห้อง)
+      const { data: slotAssigns } = await supabase
+        .from("teaching_assignments")
+        .select("teacher_id, classroom_id, activity_type")
+        .eq("academic_year", termInfo.year)
+        .eq("semester", termInfo.semester)
+        .eq("day_of_week", activeSlot.day)
+        .eq("slot_id", activeSlot.slotId)
+        .neq("id", editingId ?? -1);
+
+      const warnings: string[] = [];
+
+      // ① ครูคนนี้สอนห้องอื่นในคาบเดียวกันอยู่แล้ว
+      if (formData.teacher_id) {
+        const teacherBusy = (slotAssigns || []).some(
+          a => String(a.teacher_id) === String(formData.teacher_id)
+        );
+        if (teacherBusy) {
+          const tName = teachers.find(t => t.id === formData.teacher_id)?.full_name || "ครูคนนี้";
+          warnings.push(`👤 "${tName}" มีคาบสอนหรือประชุมในเวลานี้อยู่แล้ว (ข้ามห้อง)`);
+        }
+      }
+
+      // ② ห้องนี้มีคาบสอนในเวลานี้อยู่แล้ว
+      const roomBusy = (slotAssigns || []).some(
+        a => String(a.classroom_id) === String(selectedRoom)
+      );
+      if (roomBusy) {
+        const rName = classrooms.find(r => r.id === selectedRoom)?.name || "ห้องนี้";
+        warnings.push(`🏫 ห้อง "${rName}" มีวิชาสอนในคาบนี้อยู่แล้ว`);
+      }
+
+      // ③ ห้องนี้จะมีครู 2 คนในคาบเดียวกัน
+      if (formData.teacher_id) {
+        const roomHasOtherTeacher = (slotAssigns || []).some(
+          a => String(a.classroom_id) === String(selectedRoom) &&
+               a.teacher_id &&
+               String(a.teacher_id) !== String(formData.teacher_id)
+        );
+        if (roomHasOtherTeacher) {
+          const rName = classrooms.find(r => r.id === selectedRoom)?.name || "ห้องนี้";
+          warnings.push(`⚡ ห้อง "${rName}" จะมีครู 2 คนสอนพร้อมกันในคาบนี้`);
+        }
+      }
+
+      if (warnings.length > 0) {
+        const proceed = confirm(
+          `⚠️ พบปัญหา ${warnings.length} รายการ:
+
+${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
+
+ต้องการลงต่อไปหรือไม่?`
+        );
+        if (!proceed) return;
+      }
+    }
+
     setIsLoading(true);
 
     const payload = {
@@ -277,7 +428,6 @@ export default function ManageAssignments() {
     setIsLoading(true);
 
     try {
-      // 1. โหลดโครงสร้างรายวิชา (course_structures) ของห้องนี้
       const { data: structures, error: structError } = await supabase
         .from("course_structures")
         .select(`*, course_teachers(teacher_id)`)
@@ -290,7 +440,6 @@ export default function ManageAssignments() {
         return;
       }
 
-      // 2. ถ้า reset → ลบเฉพาะคาบที่ไม่ได้ล็อก
       if (mode === 'reset') {
         await supabase.from("teaching_assignments")
           .delete()
@@ -300,7 +449,6 @@ export default function ManageAssignments() {
           .eq("is_locked", false);
       }
 
-      // 3. โหลดตารางปัจจุบันของห้องนี้ (หลังจากลบแล้ว)
       const { data: existing } = await supabase
         .from("teaching_assignments")
         .select("day_of_week, slot_id, teacher_id, subject_id")
@@ -308,20 +456,17 @@ export default function ManageAssignments() {
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester);
 
-      // 3b. โหลดตารางของทุกห้อง (ยกเว้นห้องนี้) เพื่อเช็คครูชนข้ามห้อง
       const { data: allRoomsExisting } = await supabase
         .from("teaching_assignments")
-        .select("day_of_week, slot_id, teacher_id")
+        .select("day_of_week, slot_id, teacher_id, classroom_id")
         .neq("classroom_id", selectedRoom)
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester);
 
-      // ชุด key ที่ถูกใช้แล้วในห้องนี้: "day-slotId"
       const usedRoomSlots = new Set<string>(
         (existing || []).map((r: any) => `${r.day_of_week}-${r.slot_id}`)
       );
 
-      // ชุด key ที่ครูถูกใช้อยู่แล้ว: รวมทั้งห้องนี้ + ทุกห้องอื่น
       const usedTeacherSlots = new Set<string>([
         ...(existing || [])
           .filter((r: any) => r.teacher_id)
@@ -331,19 +476,26 @@ export default function ManageAssignments() {
           .map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`),
       ]);
 
-      // ชุด key วิชาที่ลงในวันนั้นแล้ว: "subjectId-day"
-      // — ป้องกันวิชาเดียวกันลงวันซ้ำ และนับจากที่ลงมือเองไว้แล้วด้วย
       const usedSubjectDays = new Set<string>(
         (existing || []).map((r: any) => `${r.subject_id}-${r.day_of_week}`)
       );
 
-      // ชุด subjectId ที่มีอยู่แล้วในตาราง (ลงมือเอง) → หักออกจาก periods_needed
+      // ห้องที่มีครูสอนอยู่แล้ว (ข้ามห้อง) — ป้องกัน ห้องเดียวมีครู 2 คน
+      // key: "classroomId-day-slotId"
+      const usedClassroomSlots = new Set<string>([
+        ...(allRoomsExisting || [])
+          .filter((r: any) => r.classroom_id && !r.activity_type)
+          .map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
+        ...(existing || [])
+          .filter((r: any) => r.classroom_id && !r.activity_type)
+          .map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
+      ]);
+
       const existingSubjectCount: Record<string, number> = {};
       for (const r of (existing || [])) {
         existingSubjectCount[r.subject_id] = (existingSubjectCount[r.subject_id] || 0) + 1;
       }
 
-      // 4. เตรียม "งาน" ที่ต้องจัดใส่ตาราง
       type Job = {
         subject_id: string;
         teacher_id: string | null;
@@ -362,9 +514,8 @@ export default function ManageAssignments() {
             major_group: s.major_group || "ทั้งหมด",
           };
         })
-        .filter((j: Job) => j.periods_needed > 0); // ข้ามวิชาที่ลงครบแล้ว
+        .filter((j: Job) => j.periods_needed > 0);
 
-      // สร้างลิสต์ของ slot ว่างทั้งหมด (วน days × realSlotIds)
       const allSlots: { day: string; slotId: number }[] = [];
       for (const day of days) {
         for (const slotId of realSlotIds) {
@@ -372,18 +523,15 @@ export default function ManageAssignments() {
         }
       }
 
-      // กรองเอาเฉพาะ slot ที่ยังว่างอยู่ในห้องนี้
       let availableSlots = allSlots.filter(
         s => !usedRoomSlots.has(`${s.day}-${s.slotId}`)
       );
 
-      // shuffle เพื่อกระจาย (Fisher-Yates)
       for (let i = availableSlots.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [availableSlots[i], availableSlots[j]] = [availableSlots[j], availableSlots[i]];
       }
 
-      // 5. จัดวาง: วนทีละ job, หาคาบว่างที่ครูไม่ชนและวิชาไม่ซ้ำวัน
       const toInsert: any[] = [];
 
       for (const job of jobs) {
@@ -400,10 +548,28 @@ export default function ManageAssignments() {
             ? usedTeacherSlots.has(`${job.teacher_id}-${slot.day}-${slot.slotId}`)
             : false;
 
-          // วิชาเดียวกันห้ามลงวันเดียวกัน
           const subjectSameDay = usedSubjectDays.has(`${job.subject_id}-${slot.day}`);
 
-          if (!teacherBusy && !subjectSameDay) {
+          // ตรวจกฎ "คณิตห้ามติดคาบ" — ดูวิชาทั้งที่มีอยู่แล้ว + ที่จะ insert ในรอบนี้
+          const jobSubjectName = subjects.find(s => s.id === job.subject_id)?.name || "";
+          const existingSlotsInDay = [
+            ...(existing || []).map((r: any) => ({
+              slot_id: r.slot_id,
+              subjectName: subjects.find(s => s.id === r.subject_id)?.name || "",
+            })),
+            ...toInsert
+              .filter((r: any) => r.day_of_week === slot.day)
+              .map((r: any) => ({
+                slot_id: r.slot_id,
+                subjectName: subjects.find(s => s.id === r.subject_id)?.name || "",
+              })),
+          ].filter(r => r.slot_id !== slot.slotId);
+          const violatesMathRule = wouldViolateMathAdjacentRule(jobSubjectName, slot.slotId, existingSlotsInDay);
+
+          // ห้องที่กำลังจัดมีครูอื่นสอนอยู่แล้ว (ข้ามห้อง) — ข้ามคาบนี้
+          const classroomConflict = usedClassroomSlots.has(`${selectedRoom}-${slot.day}-${slot.slotId}`);
+
+          if (!teacherBusy && !subjectSameDay && !violatesMathRule && !classroomConflict) {
             toInsert.push({
               classroom_id: selectedRoom,
               subject_id: job.subject_id,
@@ -418,6 +584,7 @@ export default function ManageAssignments() {
 
             usedRoomSlots.add(`${slot.day}-${slot.slotId}`);
             usedSubjectDays.add(`${job.subject_id}-${slot.day}`);
+            usedClassroomSlots.add(`${selectedRoom}-${slot.day}-${slot.slotId}`);
             if (job.teacher_id) {
               usedTeacherSlots.add(`${job.teacher_id}-${slot.day}-${slot.slotId}`);
             }
@@ -430,14 +597,12 @@ export default function ManageAssignments() {
         availableSlots = newAvailable;
       }
 
-      // 6. Insert ทั้งหมดในครั้งเดียว
       if (toInsert.length > 0) {
         const { error: insertErr } = await supabase
           .from("teaching_assignments")
           .insert(toInsert);
         if (insertErr) throw insertErr;
       }
-      // สรุปผลจะแสดงอัตโนมัติจาก structureSummary หลัง fetchSchedule
 
     } catch (err: any) {
       console.error(err);
@@ -466,7 +631,6 @@ export default function ManageAssignments() {
     try {
       const targetRoomIds = targetRooms.map(r => r.id);
 
-      // ลบข้อมูลเดิมในช่องนั้นก่อน
       await supabase.from("teaching_assignments").delete()
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester)
@@ -475,7 +639,6 @@ export default function ManageAssignments() {
         .in("classroom_id", targetRoomIds);
 
       if (!isFreeMode) {
-        // โหมดวิชา: insert วิชาที่เลือกลงทุกห้อง
         const insertPayload = targetRooms.map(room => ({
           classroom_id: room.id,
           subject_id: fixedFormData.subject_id,
@@ -490,7 +653,6 @@ export default function ManageAssignments() {
         const { error } = await supabase.from("teaching_assignments").insert(insertPayload);
         if (error) throw error;
       }
-      // โหมดคาบว่าง: แค่ลบอย่างเดียว ไม่ต้อง insert อะไร
 
       setIsFixedModalOpen(false);
       await fetchSchedule(selectedRoom, termInfo.year, termInfo.semester);
@@ -642,8 +804,6 @@ export default function ManageAssignments() {
                 </tbody>
               </table>
             </div>
-            
-
 
             {/* --- 📋 สรุปสถานะรายวิชาเทียบโครงสร้าง --- */}
             {structureSummary && (
@@ -660,7 +820,6 @@ export default function ManageAssignments() {
                 </div>
 
                 <div className="space-y-4">
-                  {/* วิชาที่ลงไม่ครบ */}
                   {structureSummary.filter(i => i.placed < i.needed).length > 0 && (
                     <div>
                       <div className="text-xs font-bold text-red-500 uppercase mb-2 flex items-center gap-1.5">
@@ -699,7 +858,6 @@ export default function ManageAssignments() {
                     </div>
                   )}
 
-                  {/* วิชาที่ลงครบ */}
                   {structureSummary.filter(i => i.placed === i.needed).length > 0 && (
                     <div>
                       <div className="text-xs font-bold text-green-600 uppercase mb-2 flex items-center gap-1.5">
@@ -757,7 +915,7 @@ export default function ManageAssignments() {
             <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
               <div className="text-xs text-slate-500 font-bold uppercase mb-1">วัน{activeSlot?.day} คาบที่ {activeSlot?.slotId}</div>
               
-              {/* Searchable Subject Dropdown */}
+              {/* Searchable Subject Dropdown — กรองตามระดับชั้นของห้องที่เลือก */}
               <div className="relative">
                 <div
                   className="w-full p-2 border rounded-xl bg-slate-50 cursor-pointer flex items-center justify-between text-sm"
@@ -790,7 +948,7 @@ export default function ManageAssignments() {
                       >
                         -- เลือกวิชา --
                       </div>
-                      {subjects
+                      {subjectsForSelectedRoom
                         .filter(s =>
                           subjectSearch === "" ||
                           s.code.toLowerCase().includes(subjectSearch.toLowerCase()) ||
@@ -806,7 +964,7 @@ export default function ManageAssignments() {
                           </div>
                         ))
                       }
-                      {subjects.filter(s =>
+                      {subjectsForSelectedRoom.filter(s =>
                         subjectSearch !== "" && (
                           s.code.toLowerCase().includes(subjectSearch.toLowerCase()) ||
                           s.name.toLowerCase().includes(subjectSearch.toLowerCase())
@@ -818,6 +976,7 @@ export default function ManageAssignments() {
                   </div>
                 )}
               </div>
+
               {/* Searchable Teacher Dropdown with department grouping */}
               <div className="relative">
                 <div
@@ -959,7 +1118,11 @@ export default function ManageAssignments() {
               {/* เป้าหมายระดับชั้น */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">ระดับชั้นเป้าหมาย</label>
-                <select className="w-full p-2.5 border rounded-xl bg-slate-50 font-bold text-slate-700 text-sm" value={fixedFormData.target_level} onChange={e => setFixedFormData({ ...fixedFormData, target_level: e.target.value })}>
+                <select
+                  className="w-full p-2.5 border rounded-xl bg-slate-50 font-bold text-slate-700 text-sm"
+                  value={fixedFormData.target_level}
+                  onChange={e => setFixedFormData({ ...fixedFormData, target_level: e.target.value, subject_id: fixedFormData.subject_id === '__free__' ? '__free__' : '' })}
+                >
                   <option value="all">🌍 ทุกระดับชั้น</option>
                   {[1,2,3,4,5,6].map(lv => <option key={lv} value={String(lv)}>ม.{lv}</option>)}
                 </select>
@@ -981,10 +1144,17 @@ export default function ManageAssignments() {
                 </div>
               </div>
 
-              {/* วิชา (แสดงเฉพาะโหมดวิชา) */}
+              {/* วิชา (แสดงเฉพาะโหมดวิชา) — กรองตาม target_level */}
               {fixedFormData.subject_id !== '__free__' && (
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">วิชาเรียน</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1.5">
+                    วิชาเรียน
+                    {fixedFormData.target_level !== 'all' && (
+                      <span className="ml-1.5 normal-case font-normal text-amber-500">
+                        (แสดงเฉพาะวิชา ม.{fixedFormData.target_level})
+                      </span>
+                    )}
+                  </label>
                   <div className="relative">
                     <div className="w-full p-2.5 border rounded-xl bg-slate-50 cursor-pointer flex items-center justify-between text-sm"
                       onClick={() => setSubjectDropdownOpen(p => !p)}>
@@ -1007,7 +1177,8 @@ export default function ManageAssignments() {
                             onClick={() => { setFixedFormData({ ...fixedFormData, subject_id: "" }); setSubjectDropdownOpen(false); setSubjectSearch(""); }}>
                             -- เลือกวิชา --
                           </div>
-                          {subjects.filter(s => subjectSearch === "" || s.code.toLowerCase().includes(subjectSearch.toLowerCase()) || s.name.toLowerCase().includes(subjectSearch.toLowerCase()))
+                          {subjectsForFixedModal
+                            .filter(s => subjectSearch === "" || s.code.toLowerCase().includes(subjectSearch.toLowerCase()) || s.name.toLowerCase().includes(subjectSearch.toLowerCase()))
                             .map(s => (
                               <div key={s.id}
                                 className={`px-3 py-2 text-sm cursor-pointer hover:bg-amber-50 transition-colors ${fixedFormData.subject_id === s.id ? "bg-amber-50 font-bold text-amber-700" : "text-slate-700"}`}
@@ -1015,6 +1186,14 @@ export default function ManageAssignments() {
                                 <span className="font-mono text-xs text-slate-400 mr-2">{s.code}</span>{s.name}
                               </div>
                             ))}
+                          {subjectsForFixedModal.filter(s =>
+                            subjectSearch !== "" && (
+                              s.code.toLowerCase().includes(subjectSearch.toLowerCase()) ||
+                              s.name.toLowerCase().includes(subjectSearch.toLowerCase())
+                            )
+                          ).length === 0 && subjectSearch !== "" && (
+                            <div className="px-3 py-3 text-sm text-slate-400 text-center">ไม่พบวิชาที่ค้นหา</div>
+                          )}
                         </div>
                       </div>
                     )}
