@@ -14,14 +14,22 @@ function strSimilarity(a: string, b: string): number {
     dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
   return 1 - dp[m][n] / Math.max(m, n);
 }
+
 function fuzzyGroupTeachers(teachers: any[], threshold=0.8): [string, any[]][] {
   const canonicals: string[] = [];
   const groups: Record<string, any[]> = {};
   for (const t of teachers) {
     const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
     let matched = canonicals.find(c => strSimilarity(c, dept) >= threshold);
-    if (!matched) { matched = dept; canonicals.push(dept); groups[dept] = []; }
-    groups[matched].push(t);
+    
+    if (!matched) { 
+      matched = dept; 
+      canonicals.push(dept); 
+      groups[dept] = []; 
+    }
+    
+    // ระบุว่าเป็น string แน่นอนเพื่อแก้ปัญหา Type 'undefined' cannot be used as an index type
+    groups[matched as string].push(t);
   }
   return Object.entries(groups).sort(([a],[b]) => a.localeCompare(b,'th'));
 }
