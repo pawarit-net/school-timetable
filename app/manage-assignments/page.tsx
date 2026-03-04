@@ -1,7 +1,41 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from '@/lib/supabaseClient'
 import Link from "next/link";
+
+// --- Levenshtein similarity ---
+function strSimilarity(a: string, b: string): number {
+  a = a.trim().toLowerCase();
+  b = b.trim().toLowerCase();
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  if (m === 0 || n === 0) return 0;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return 1 - dp[m][n] / Math.max(m, n);
+}
+
+// จัดกลุ่มครูตาม department โดย fuzzy match ≥ threshold
+function fuzzyGroupTeachers(teachers: Teacher[], threshold = 0.8): Record<string, Teacher[]> {
+  const canonicals: string[] = []; // ชื่อกลุ่มตัวแทน
+  const groups: Record<string, Teacher[]> = {};
+
+  for (const t of teachers) {
+    const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
+    let matched = canonicals.find(c => strSimilarity(c, dept) >= threshold);
+    if (!matched) {
+      matched = dept;
+      canonicals.push(dept);
+      groups[dept] = [];
+    }
+    groups[matched].push(t);
+  }
+  return groups;
+}
 
 // --- Interfaces ---
 interface TimeSlot { id: number | string; label: string; time: string; isBreak?: boolean; }
@@ -43,6 +77,8 @@ export default function ManageAssignments() {
   const [subjectDropdownOpen, setSubjectDropdownOpen] = useState(false);
   const [teacherSearch, setTeacherSearch] = useState("");
   const [teacherDropdownOpen, setTeacherDropdownOpen] = useState(false);
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [clearMode, setClearMode] = useState<"unlocked" | "all">("unlocked");
 
   // State โครงสร้างรายวิชา (สำหรับแสดงสรุปแบบ persistent)
   const [courseStructures, setCourseStructures] = useState<any[]>([]);
@@ -67,6 +103,12 @@ export default function ManageAssignments() {
   });
 
   const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
+
+  // จัดกลุ่มครูแบบ fuzzy — ชื่อหมวดที่คล้ายกัน ≥80% จะถูกรวมกลุ่มเดียว
+  const fuzzyGroupedTeachers = useMemo(() => {
+    const grouped = fuzzyGroupTeachers(teachers, 0.8);
+    return Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b, 'th'));
+  }, [teachers]);
   const timeSlots: TimeSlot[] = [
     { id: 1, label: "คาบ 1", time: "08:30 - 09:20" },
     { id: 2, label: "คาบ 2", time: "09:20 - 10:10" },
@@ -464,12 +506,18 @@ export default function ManageAssignments() {
       await fetchSchedule();
   }
   
-  async function clearSchedule() {
-      if(!confirm("ล้างตารางห้องนี้ทั้งหมด?")) return;
-      setIsLoading(true);
-      await supabase.from("teaching_assignments").delete().eq("classroom_id", selectedRoom).eq("academic_year", termInfo.year).eq("semester", termInfo.semester);
-      await fetchSchedule();
-      setIsLoading(false);
+  async function clearSchedule(mode: "unlocked" | "all") {
+    setIsLoading(true);
+    let query = supabase.from("teaching_assignments")
+      .delete()
+      .eq("classroom_id", selectedRoom)
+      .eq("academic_year", termInfo.year)
+      .eq("semester", termInfo.semester);
+    if (mode === "unlocked") query = query.eq("is_locked", false);
+    await query;
+    setShowClearModal(false);
+    await fetchSchedule(selectedRoom, termInfo.year, termInfo.semester);
+    setIsLoading(false);
   }
 
   return (
@@ -507,7 +555,7 @@ export default function ManageAssignments() {
             <button onClick={handleAutoAssign} disabled={!selectedRoom} className="flex-1 md:flex-none px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm hover:bg-indigo-700 transition shadow-sm disabled:opacity-50">
                 🤖 จัดอัตโนมัติ
             </button>
-            <button onClick={clearSchedule} disabled={!selectedRoom} className="flex-1 md:flex-none px-4 py-2 border border-red-200 text-red-600 rounded-lg font-bold text-sm hover:bg-red-50 transition disabled:opacity-50">
+            <button onClick={() => { setClearMode("unlocked"); setShowClearModal(true); }} disabled={!selectedRoom} className="flex-1 md:flex-none px-4 py-2 border border-red-200 text-red-600 rounded-lg font-bold text-sm hover:bg-red-50 transition disabled:opacity-50">
                 🗑️ ล้างตาราง
             </button>
           </div>
@@ -700,13 +748,13 @@ export default function ManageAssignments() {
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border" style={{overflow: 'visible'}}>
-            <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+            <div className="p-4 border-b bg-slate-50 flex justify-between items-center rounded-t-2xl">
               <h3 className="font-bold text-slate-800">
                 {editingId ? '📝 แก้ไขข้อมูลคาบเรียน' : `ลงวิชาห้อง ${classrooms.find(c => c.id === selectedRoom)?.name}`}
               </h3>
               <button onClick={() => { setIsModalOpen(false); setEditingId(null); setSubjectDropdownOpen(false); setSubjectSearch(""); setTeacherDropdownOpen(false); setTeacherSearch(""); }} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
-            <div className="p-5 space-y-3">
+            <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
               <div className="text-xs text-slate-500 font-bold uppercase mb-1">วัน{activeSlot?.day} คาบที่ {activeSlot?.slotId}</div>
               
               {/* Searchable Subject Dropdown */}
@@ -724,7 +772,7 @@ export default function ManageAssignments() {
                 </div>
 
                 {subjectDropdownOpen && (
-                  <div className="absolute z-30 bottom-full mb-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                  <div className="absolute z-[60] top-full mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
                     <div className="p-2 border-b">
                       <input
                         autoFocus
@@ -785,7 +833,7 @@ export default function ManageAssignments() {
                 </div>
 
                 {teacherDropdownOpen && (
-                  <div className="absolute z-30 bottom-full mb-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                  <div className="absolute z-[60] top-full mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
                     <div className="p-2 border-b">
                       <input
                         autoFocus
@@ -807,14 +855,9 @@ export default function ManageAssignments() {
                         const filtered = teachers.filter(t =>
                           teacherSearch === "" || t.full_name.toLowerCase().includes(teacherSearch.toLowerCase())
                         );
-                        // จัดกลุ่มตาม department
-                        const grouped = filtered.reduce((acc: Record<string, typeof teachers>, t) => {
-                          const dept = t.department || "ไม่ระบุกลุ่มสาระ";
-                          if (!acc[dept]) acc[dept] = [];
-                          acc[dept].push(t);
-                          return acc;
-                        }, {});
-                        const entries = Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b, 'th'));
+                        const entries = fuzzyGroupedTeachers
+                          .map(([dept, list]) => [dept, list.filter((t: Teacher) => filtered.find(f => f.id === t.id))] as [string, Teacher[]])
+                          .filter(([, list]) => list.length > 0);
                         if (entries.length === 0) return (
                           <div className="px-3 py-3 text-sm text-slate-400 text-center">ไม่พบครูที่ค้นหา</div>
                         );
@@ -823,7 +866,7 @@ export default function ManageAssignments() {
                             <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase bg-slate-50 border-b border-t sticky top-0">
                               {dept}
                             </div>
-                            {list.map(t => (
+                            {list.map((t: Teacher) => (
                               <div
                                 key={t.id}
                                 className={`px-3 py-2 text-sm cursor-pointer hover:bg-indigo-50 transition-colors ${formData.teacher_id === t.id ? "bg-indigo-50 font-bold text-indigo-700" : "text-slate-700"}`}
@@ -1004,16 +1047,13 @@ export default function ManageAssignments() {
                         </div>
                         {(() => {
                           const filtered = teachers.filter(t => teacherSearch === "" || t.full_name.toLowerCase().includes(teacherSearch.toLowerCase()));
-                          const grouped = filtered.reduce((acc: Record<string, typeof teachers>, t) => {
-                            const dept = t.department || "ไม่ระบุกลุ่มสาระ";
-                            if (!acc[dept]) acc[dept] = [];
-                            acc[dept].push(t);
-                            return acc;
-                          }, {});
-                          return Object.entries(grouped).sort(([a],[b]) => a.localeCompare(b,'th')).map(([dept, list]) => (
+                          const entries = fuzzyGroupedTeachers
+                            .map(([dept, list]) => [dept, list.filter((t: Teacher) => filtered.find(f => f.id === t.id))] as [string, Teacher[]])
+                            .filter(([, list]) => list.length > 0);
+                          return entries.map(([dept, list]) => (
                             <div key={dept}>
                               <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase bg-slate-50 border-y sticky top-0">{dept}</div>
-                              {list.map(t => (
+                              {list.map((t: Teacher) => (
                                 <div key={t.id}
                                   className={`px-3 py-2 text-sm cursor-pointer hover:bg-amber-50 transition-colors ${fixedFormData.teacher_id === t.id ? "bg-amber-50 font-bold text-amber-700" : "text-slate-700"}`}
                                   onClick={() => { setFixedFormData({ ...fixedFormData, teacher_id: t.id }); setTeacherDropdownOpen(false); setTeacherSearch(""); }}>
@@ -1062,6 +1102,56 @@ export default function ManageAssignments() {
               <button onClick={handleSaveGlobalSubject} disabled={isLoading || (fixedFormData.subject_id !== '__free__' && !fixedFormData.subject_id)}
                 className="flex-1 px-4 py-2.5 bg-amber-500 text-white rounded-xl font-bold shadow-lg hover:bg-amber-600 disabled:opacity-40 text-sm">
                 {isLoading ? "กำลังประมวลผล..." : "✅ ยืนยันลงวิชา"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🗑️ Modal: ยืนยันล้างตาราง */}
+      {showClearModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm border p-6 space-y-5">
+            <div className="text-center">
+              <div className="text-4xl mb-2">🗑️</div>
+              <h3 className="text-lg font-bold text-slate-800">ล้างตารางสอน</h3>
+              <p className="text-sm text-slate-500 mt-1">ห้อง {classrooms.find(c => c.id === selectedRoom)?.name}</p>
+            </div>
+
+            <div className="space-y-3">
+              <div
+                onClick={() => setClearMode("unlocked")}
+                className={`p-4 rounded-xl border-2 cursor-pointer transition ${clearMode === "unlocked" ? "border-amber-400 bg-amber-50" : "border-slate-200 hover:border-amber-200"}`}>
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">🔓</span>
+                  <div>
+                    <div className="font-bold text-slate-800 text-sm">ล้างเฉพาะที่ไม่ได้ล็อก</div>
+                    <div className="text-xs text-slate-500 mt-0.5">วิชาที่ล็อก 🔒 จะยังคงอยู่ในตาราง</div>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                onClick={() => setClearMode("all")}
+                className={`p-4 rounded-xl border-2 cursor-pointer transition ${clearMode === "all" ? "border-red-400 bg-red-50" : "border-slate-200 hover:border-red-200"}`}>
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">💣</span>
+                  <div>
+                    <div className="font-bold text-red-700 text-sm">ล้างทั้งหมด</div>
+                    <div className="text-xs text-slate-500 mt-0.5">รวมวิชาที่ล็อกไว้ด้วย ไม่สามารถกู้คืนได้</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => setShowClearModal(false)} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition">
+                ยกเลิก
+              </button>
+              <button
+                onClick={() => clearSchedule(clearMode)}
+                className={`flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition ${clearMode === "all" ? "bg-red-500 hover:bg-red-600" : "bg-amber-500 hover:bg-amber-600"}`}>
+                {clearMode === "all" ? "💣 ล้างทั้งหมด" : "🔓 ล้างที่ไม่ล็อก"}
               </button>
             </div>
           </div>

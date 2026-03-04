@@ -2,6 +2,34 @@
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+// --- Levenshtein similarity ---
+function strSimilarity(a: string, b: string): number {
+  a = a.trim().toLowerCase();
+  b = b.trim().toLowerCase();
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  if (m === 0 || n === 0) return 0;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return 1 - dp[m][n] / Math.max(m, n);
+}
+
+function fuzzyGroupTeachers(teachers: any[], threshold = 0.8): [string, any[]][] {
+  const canonicals: string[] = [];
+  const groups: Record<string, any[]> = {};
+  for (const t of teachers) {
+    const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
+    let matched = canonicals.find(c => strSimilarity(c, dept) >= threshold);
+    if (!matched) { matched = dept; canonicals.push(dept); groups[dept] = []; }
+    groups[matched].push(t);
+  }
+  return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, 'th'));
+}
+
 export default function CourseStructurePage() {
   const [courses, setCourses] = useState<any[]>([]);
   const [classrooms, setClassrooms] = useState<any[]>([]);
@@ -172,14 +200,7 @@ export default function CourseStructurePage() {
 
   const getTeacherName = (t: any) => t ? (t.full_name || t.name || "ครู") : "-";
 
-  const teacherGrouped = useMemo(() => Object.entries(
-    teachers.reduce((acc: any, t: any) => {
-      const dept = t.department || "ทั่วไป";
-      if (!acc[dept]) acc[dept] = [];
-      acc[dept].push(t);
-      return acc;
-    }, {})
-  ), [teachers]);
+  const teacherGrouped = useMemo(() => fuzzyGroupTeachers(teachers, 0.8), [teachers]);
 
   const activeFiltersCount = [filterYear, filterTerm, filterRoom, filterTeacher].filter(f => f !== "all").length;
 
@@ -244,7 +265,11 @@ export default function CourseStructurePage() {
             <select className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 ring-indigo-300"
               value={filterTeacher} onChange={e => setFilterTeacher(e.target.value)}>
               <option value="all">ทุกครูผู้สอน</option>
-              {teachers.map(t => <option key={t.id} value={String(t.id)}>{t.full_name}</option>)}
+              {teacherGrouped.map(([dept, list]) => (
+                <optgroup key={dept} label={`📂 ${dept}`}>
+                  {list.map((t: any) => <option key={t.id} value={String(t.id)}>{t.full_name}</option>)}
+                </optgroup>
+              ))}
             </select>
 
             {activeFiltersCount > 0 && (
