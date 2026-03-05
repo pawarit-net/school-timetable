@@ -3,810 +3,1091 @@ import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import Link from "next/link";
 
-interface Session { id: string; full_name: string; email: string; role: string; }
-interface Assignment {
-  id: number; day_of_week: string; slot_id: number;
-  classroom_id: string; subject_id: string; teacher_id: string;
-  academic_year: string; semester: string; is_locked: boolean;
-  subjects?: { code: string; name: string };
-  classrooms?: { name: string };
-  teachers?: { full_name: string };
-}
-interface SwapCandidate {
-  assignment: Assignment;
-  reason: string; // "ว่างทั้งคู่ 100%"
-}
-interface SwapHistory {
-  id: number; created_at: string;
-  requester_name: string;
-  from_day: string; from_slot_id: number; from_classroom_name: string; from_subject_name: string;
-  to_day: string; to_slot_id: number; to_classroom_name: string; to_subject_name: string;
-  to_teacher_name: string;
-  academic_year: string; semester: string;
-}
-
-const DAYS = ["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"];
-const SLOT_LABELS: Record<number,string> = {1:"08:30-09:20",2:"09:20-10:10",3:"10:25-11:15",4:"11:15-12:05",5:"13:00-13:50",6:"14:00-14:50",7:"14:50-15:40"};
-
-
 // --- Fuzzy grouping ---
 function strSimilarity(a: string, b: string): number {
   a = a.trim().toLowerCase(); b = b.trim().toLowerCase();
   if (a === b) return 1;
   const m = a.length, n = b.length;
   if (!m || !n) return 0;
-  const dp = Array.from({length: m+1}, (_,i) => Array.from({length: n+1}, (_,j) => i===0?j:j===0?i:0));
+  const dp = Array.from({length:m+1},(_,i)=>Array.from({length:n+1},(_,j)=>i===0?j:j===0?i:0));
   for (let i=1;i<=m;i++) for (let j=1;j<=n;j++)
-    dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
-  return 1 - dp[m][n] / Math.max(m, n);
+    dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
+  return 1-dp[m][n]/Math.max(m,n);
 }
-function fuzzyGroupTeachers(teachers: {id:string,full_name:string,department?:string}[], threshold=0.8) {
-  const canonicals: string[] = [];
-  const groups: Record<string, typeof teachers> = {};
+function fuzzyGroupTeachers(teachers:{id:string,full_name:string,department?:string}[], threshold=0.8) {
+  const canonicals:string[]=[], groups:Record<string,typeof teachers>={};
   for (const t of teachers) {
-    const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
-    let matched = canonicals.find(c => strSimilarity(c, dept) >= threshold);
-    if (!matched) { matched = dept; canonicals.push(dept); groups[dept] = []; }
+    const dept=t.department?.trim()||"ไม่ระบุกลุ่มสาระ";
+    let matched=canonicals.find(c=>strSimilarity(c,dept)>=threshold);
+    if (!matched){matched=dept;canonicals.push(dept);groups[dept]=[];}
     groups[matched].push(t);
   }
-  return Object.entries(groups).sort(([a],[b]) => a.localeCompare(b,'th'));
+  return Object.entries(groups).sort(([a],[b])=>a.localeCompare(b,"th"));
 }
 
-export default function SwapPeriods() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [termInfo, setTermInfo] = useState({ year: "2569", semester: "3" });
+// ─── Types ───────────────────────────────────────────────────
+interface Assignment {
+  id:number; day_of_week:string; slot_id:number;
+  classroom_id:string; subject_id:string; teacher_id:string;
+  academic_year:string; semester:string; is_locked:boolean;
+  subjects?:{code:string;name:string};
+  classrooms?:{name:string};
+  teachers?:{full_name:string};
+}
+interface SwapOption {
+  assignment: Assignment;
+  teacherB: {id:string; full_name:string; department?:string};
+  bothWayOk: boolean;
+}
+interface SwapHistory {
+  id:number; created_at:string;
+  requester_id:string; requester_name:string;
+  from_day:string; from_slot_id:number;
+  from_classroom_id:string; from_classroom_name:string;
+  from_subject_id:string; from_subject_name:string;
+  to_day:string; to_slot_id:number;
+  to_classroom_id:string; to_classroom_name:string;
+  to_subject_id:string; to_subject_name:string;
+  to_teacher_id:string; to_teacher_name:string;
+  academic_year:string; semester:string;
+}
 
-  // ตารางสอนของครูที่ login
-  const [myPeriods, setMyPeriods] = useState<Assignment[]>([]);
-  // คาบที่เลือกจะแลก
-  const [selectedPeriod, setSelectedPeriod] = useState<Assignment | null>(null);
-  // ตารางสอนทั้งหมดในระบบ (ห้องเดียวกัน)
-  const [allAssignments, setAllAssignments] = useState<Assignment[]>([]);
-  // รายการคาบที่แลกได้
-  const [candidates, setCandidates] = useState<SwapCandidate[]>([]);
-  // คาบที่เลือกจะแลกด้วย
-  const [targetPeriod, setTargetPeriod] = useState<Assignment | null>(null);
+// ─── Constants ────────────────────────────────────────────────
+const DAYS = ["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"];
+const ALL_SLOTS = [1,2,3,4,5,6,7];
+const SLOT_TIME:Record<number,string> = {
+  1:"08:30-09:20",2:"09:20-10:10",3:"10:25-11:15",
+  4:"11:15-12:05",5:"13:00-13:50",6:"14:00-14:50",7:"14:50-15:40"
+};
 
-  const [isLoading, setIsLoading] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [tab, setTab] = useState<"swap" | "history">("swap");
-  const [history, setHistory] = useState<SwapHistory[]>([]);
-  const [allTeachers, setAllTeachers] = useState<{id:string,full_name:string,department?:string}[]>([]);
-  const [myTeacherId, setMyTeacherId] = useState<string>(""); // ครู A (ผู้แลกออก)
-  const [viewTeacherId, setViewTeacherId] = useState<string>(""); // ครู B (ผู้รับแลก)
-  const [myTeacherPeriods, setMyTeacherPeriods] = useState<Assignment[]>([]); // คาบของครู A
-  const [sameRoomTeachers, setSameRoomTeachers] = useState<{id:string,full_name:string,department?:string}[]>([]);
-  const [viewPeriods, setViewPeriods] = useState<Assignment[]>([]); // คาบของครู B
+type Step = 1|2|3|4;
 
-  function showToast(msg: string, type: "success" | "error" = "success") {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
+// ─────────────────────────────────────────────────────────────
+// resolveTeacher:
+//   ดึง "ครูที่สอนจริงวันนี้" โดย overlay swap_history ทับ teaching_assignments
+//   teaching_assignments ไม่ถูกแก้ไขเลย — swap_history เป็น source of truth ของการแลก
+// ─────────────────────────────────────────────────────────────
+function resolveEffectiveTeacher(
+  assignment: Assignment,
+  swapHistory: SwapHistory[]
+): string {
+  // หา swap record ที่เกี่ยวข้องกับ assignment นี้
+  // กรณี A แลกออก: from_day+from_slot_id+from_classroom_id ตรงกัน → ครูที่สอนจริงคือ to_teacher
+  // กรณี B แลกเข้า: to_day+to_slot_id+to_classroom_id ตรงกัน → ครูที่สอนจริงคือ requester
+  for (const h of swapHistory) {
+    if (
+      h.from_day === assignment.day_of_week &&
+      h.from_slot_id === assignment.slot_id &&
+      h.from_classroom_id === assignment.classroom_id
+    ) {
+      return h.to_teacher_id; // B สอนแทน A
+    }
+    if (
+      h.to_day === assignment.day_of_week &&
+      h.to_slot_id === assignment.slot_id &&
+      h.to_classroom_id === assignment.classroom_id
+    ) {
+      return h.requester_id; // A ไปสอนแทน B
+    }
+  }
+  return assignment.teacher_id; // ไม่มีการแลก → ครูเดิม
+}
+
+// ─────────────────────────────────────────────────────────────
+// resolveTeacherSchedule:
+//   สร้าง "ตารางสอนจริง" ของครูคนหนึ่ง โดยรวม swap_history
+//   - คาบที่ครูสอนตามปกติ (teaching_assignments) แต่ไม่ได้แลกออก
+//   - คาบที่ครูรับมาสอนแทน (swap_history ฝั่ง to_teacher หรือ requester)
+// ─────────────────────────────────────────────────────────────
+function resolveTeacherEffectiveSlots(
+  teacherId: string,
+  allAssignments: Assignment[],
+  swapHistory: SwapHistory[]
+): Set<string> {
+  const busy = new Set<string>();
+
+  // 1. คาบที่มีใน teaching_assignments และยังไม่ได้แลกออก
+  for (const a of allAssignments) {
+    if (a.teacher_id !== teacherId) continue;
+    const effectiveTeacher = resolveEffectiveTeacher(a, swapHistory);
+    if (effectiveTeacher === teacherId) {
+      busy.add(`${a.day_of_week}-${a.slot_id}`);
+    }
   }
 
-  // โหลด session + settings
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("teacher_session") : null;
-    if (saved) setSession(JSON.parse(saved));
-
-    supabase.from("academic_settings").select("*").eq("id",1).single().then(({ data }) => {
-      if (data) setTermInfo({ year: String(data.year), semester: String(data.semester) });
-    });
-  }, []);
-
-  // โหลดคาบสอนของตัวเอง
-  useEffect(() => {
-    if (!session) return;
-    loadMyPeriods();
-  }, [session, termInfo]);
-
-  async function loadMyPeriods() {
-    if (!session) return;
-    setIsLoading(true);
-    const [{ data }, { data: tchs }] = await Promise.all([
-      supabase
-        .from("teaching_assignments")
-        .select(`*, subjects(code,name), classrooms(name), teachers(full_name)`)
-        .eq("teacher_id", session.id)
-        .eq("academic_year", termInfo.year)
-        .eq("semester", termInfo.semester)
-        .order("day_of_week").order("slot_id"),
-      supabase
-        .from("teachers")
-        .select("id, full_name, department")
-        .order("department").order("full_name"),
-    ]);
-    if (data) setMyPeriods(data as Assignment[]);
-    if (tchs) setAllTeachers(tchs);
-    setIsLoading(false);
+  // 2. คาบที่ครูรับมาสอนแทน (ฝั่ง "เข้า")
+  for (const h of swapHistory) {
+    // A ไปสอนที่ห้อง B → A ติดคาบ to_day+to_slot
+    if (h.requester_id === teacherId) {
+      busy.add(`${h.to_day}-${h.to_slot_id}`);
+    }
+    // B ไปสอนที่ห้อง A → B ติดคาบ from_day+from_slot
+    if (h.to_teacher_id === teacherId) {
+      busy.add(`${h.from_day}-${h.from_slot_id}`);
+    }
   }
 
-  async function loadTeacherPeriods(teacherId: string) {
-    if (!teacherId) { setViewPeriods([]); return; }
-    setIsLoading(true);
-    const { data } = await supabase
-      .from("teaching_assignments")
-      .select(`*, subjects(code,name), classrooms(name), teachers(full_name)`)
-      .eq("teacher_id", teacherId)
-      .eq("academic_year", termInfo.year)
-      .eq("semester", termInfo.semester)
-      .order("day_of_week").order("slot_id");
-    if (data) setViewPeriods(data as Assignment[]);
-    setIsLoading(false);
-  }
+  return busy;
+}
 
-  async function loadTeacherAperiods(teacherId: string) {
-    if (!teacherId) { setMyTeacherPeriods([]); setSameRoomTeachers([]); return; }
-    setIsLoading(true);
+// ─── Sub-components ──────────────────────────────────────────
 
-    const { data } = await supabase
-      .from("teaching_assignments")
-      .select(`*, subjects(code,name), classrooms(name), teachers(full_name)`)
-      .eq("teacher_id", teacherId)
-      .eq("academic_year", termInfo.year)
-      .eq("semester", termInfo.semester)
-      .order("day_of_week").order("slot_id");
+function SwapTimetable({ teacherAPeriods, teacherBOption, selectedPeriod, teacherAName, swapHistory, allAssignments }: {
+  teacherAPeriods: Assignment[];
+  teacherBOption: SwapOption;
+  selectedPeriod: Assignment;
+  teacherAName: string;
+  swapHistory: SwapHistory[];
+  allAssignments: Assignment[];
+}) {
+  const bPeriod = teacherBOption.assignment;
+  const bName = teacherBOption.teacherB.full_name;
 
-    if (data) {
-      setMyTeacherPeriods(data as Assignment[]);
+  return (
+    <div className="mb-4">
+      <div className="text-xs font-extrabold text-slate-500 uppercase tracking-widest mb-3">📅 ตารางสอนก่อน → หลังแลก</div>
+      <div className="flex flex-wrap gap-3 text-xs mb-3">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-200 inline-block"/><span className="text-blue-700 font-bold">คาบที่แลกออก</span></span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-200 inline-block"/><span className="text-emerald-700 font-bold">คาบที่รับเข้า</span></span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-100 inline-block"/><span className="text-slate-500">คาบเดิม</span></span>
+      </div>
 
-      // หาห้องที่ครู A สอน
-      const classroomIds = [...new Set(data.map((a: any) => a.classroom_id).filter(Boolean))];
+      {/* ครู A */}
+      <div className="mb-4">
+        <div className="text-sm font-extrabold text-indigo-600 mb-2">👤 {teacherAName} (ครู A)</div>
+        <div className="overflow-x-auto">
+          <table className="border-collapse text-xs" style={{minWidth:'560px',width:'100%',tableLayout:'fixed'}}>
+            <colgroup>
+              <col style={{width:'56px'}}/>
+              {ALL_SLOTS.map(s=><col key={s} style={{width:'calc((100% - 56px)/7)'}}/>)}
+            </colgroup>
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="p-1.5 border-r border-slate-200 text-slate-400 font-medium text-center">วัน</th>
+                {ALL_SLOTS.map(s=>(
+                  <th key={s} className="p-1 border-r last:border-0 border-slate-200 text-center">
+                    <div className="font-bold text-slate-500">คาบ {s}</div>
+                    <div className="text-[9px] text-slate-400 font-normal">{SLOT_TIME[s]?.split('-')[0]}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {DAYS.map(day=>(
+                <tr key={day} className="border-b border-slate-100 last:border-0">
+                  <td className="p-1.5 border-r border-slate-200 bg-slate-50 font-bold text-center text-slate-600 text-[11px]">{day}</td>
+                  {ALL_SLOTS.map(slotId=>{
+                    const isSwapOut = day===selectedPeriod.day_of_week && slotId===selectedPeriod.slot_id;
+                    const isSwapIn  = day===bPeriod.day_of_week && slotId===bPeriod.slot_id;
+                    const period = teacherAPeriods.find(p=>p.day_of_week===day&&p.slot_id===slotId);
+                    if (isSwapOut) return (
+                      <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'64px'}}>
+                        <div className="h-full rounded-lg bg-blue-50 border-2 border-blue-300 p-1 flex flex-col justify-center items-center text-center relative">
+                          <div className="text-[8px] font-bold text-blue-400 mb-0.5">แลกออก →</div>
+                          <div className="text-[10px] font-extrabold text-blue-700 leading-tight line-clamp-2">{period?.subjects?.name||"-"}</div>
+                          <div className="text-[8px] text-blue-400">{period?.classrooms?.name}</div>
+                          <div className="absolute top-0.5 right-0.5 text-blue-300 text-[10px]">↗</div>
+                        </div>
+                      </td>
+                    );
+                    if (isSwapIn) return (
+                      <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'64px'}}>
+                        <div className="h-full rounded-lg bg-emerald-50 border-2 border-emerald-300 p-1 flex flex-col justify-center items-center text-center relative">
+                          <div className="text-[8px] font-bold text-emerald-400 mb-0.5">← รับเข้า</div>
+                          <div className="text-[10px] font-extrabold text-emerald-700 leading-tight line-clamp-2">{bPeriod.subjects?.name||"-"}</div>
+                          <div className="text-[8px] text-emerald-400">{bPeriod.classrooms?.name}</div>
+                          <div className="absolute top-0.5 right-0.5 text-emerald-300 text-[10px]">↙</div>
+                        </div>
+                      </td>
+                    );
+                    if (period) return (
+                      <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'64px'}}>
+                        <div className="h-full rounded-lg bg-slate-50 border border-slate-200 p-1 flex flex-col justify-center items-center text-center">
+                          <div className="text-[10px] font-bold text-slate-600 leading-tight line-clamp-2">{period.subjects?.name}</div>
+                          <div className="text-[8px] text-slate-400">{period.classrooms?.name}</div>
+                        </div>
+                      </td>
+                    );
+                    return <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'64px'}}><div className="h-full rounded-lg bg-white flex items-center justify-center"><span className="text-slate-200 text-xs">-</span></div></td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-      if (classroomIds.length > 0) {
-        // หาครูทุกคนที่สอนในห้องเดียวกัน (ยกเว้นครู A เอง)
-        const { data: sameRoom } = await supabase
-          .from("teaching_assignments")
-          .select("teacher_id, teachers(id, full_name, department)")
-          .in("classroom_id", classroomIds)
-          .eq("academic_year", termInfo.year)
-          .eq("semester", termInfo.semester)
-          .neq("teacher_id", teacherId);
+      {/* ครู B — 2 คาบที่เกี่ยวข้อง */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+        <div className="text-sm font-extrabold text-emerald-700 mb-2">👤 {bName} (ครู B) — คาบที่เกี่ยวข้อง</div>
+        <div className="flex gap-3 flex-wrap">
+          <div className="flex-1 min-w-[140px] bg-white border-2 border-emerald-300 rounded-xl p-3 text-center">
+            <div className="text-[10px] font-bold text-emerald-400 mb-1">คาบที่ให้ A มาสอนแทน</div>
+            <div className="font-extrabold text-sm">{bPeriod.day_of_week} คาบ {bPeriod.slot_id}</div>
+            <div className="text-xs text-slate-600 mt-0.5">{bPeriod.subjects?.name}</div>
+            <div className="text-[10px] text-slate-400">{bPeriod.classrooms?.name}</div>
+          </div>
+          <div className="flex-1 min-w-[140px] bg-white border-2 border-blue-300 rounded-xl p-3 text-center">
+            <div className="text-[10px] font-bold text-blue-400 mb-1">คาบที่ B ต้องไปสอนแทน</div>
+            <div className="font-extrabold text-sm">{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id}</div>
+            <div className="text-xs text-slate-600 mt-0.5">{selectedPeriod.subjects?.name}</div>
+            <div className="text-[10px] text-slate-400">{selectedPeriod.classrooms?.name}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        if (sameRoom) {
-          // dedup by teacher_id
-          const seen = new Set<string>();
-          const uniq = sameRoom
-            .filter((r: any) => r.teacher_id && !seen.has(r.teacher_id) && seen.add(r.teacher_id))
-            .map((r: any) => ({
-              id: r.teachers?.id || r.teacher_id,
-              full_name: r.teachers?.full_name || "-",
-              department: r.teachers?.department || "",
-            }))
-            .sort((a: any, b: any) => (a.department||"").localeCompare(b.department||"", "th") || a.full_name.localeCompare(b.full_name, "th"));
-          setSameRoomTeachers(uniq);
+function HistoryTimetable({ record }: { record: SwapHistory }) {
+  return (
+    <div>
+      <div className="text-xs font-extrabold text-slate-500 uppercase tracking-widest mb-3">📅 สรุปการแลกคาบ</div>
+      <div className="overflow-x-auto mb-4">
+        <table className="border-collapse text-xs" style={{minWidth:'560px',width:'100%',tableLayout:'fixed'}}>
+          <colgroup>
+            <col style={{width:'56px'}}/>
+            {ALL_SLOTS.map(s=><col key={s} style={{width:'calc((100% - 56px)/7)'}}/>)}
+          </colgroup>
+          <thead>
+            <tr className="bg-white border-b border-slate-200">
+              <th className="p-1.5 border-r border-slate-200 text-slate-400 text-center font-medium">วัน</th>
+              {ALL_SLOTS.map(s=>(
+                <th key={s} className="p-1 border-r last:border-0 border-slate-200 text-center">
+                  <div className="font-bold text-slate-500">คาบ {s}</div>
+                  <div className="text-[9px] text-slate-300 font-normal">{SLOT_TIME[s]?.split('-')[0]}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {DAYS.map(day=>(
+              <tr key={day} className="border-b border-slate-100 last:border-0">
+                <td className="p-1.5 border-r border-slate-200 bg-white font-bold text-center text-slate-500 text-[11px]">{day}</td>
+                {ALL_SLOTS.map(slotId=>{
+                  const isFrom = day===record.from_day && slotId===record.from_slot_id;
+                  const isTo   = day===record.to_day   && slotId===record.to_slot_id;
+                  if (isFrom) return (
+                    <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'72px'}}>
+                      <div className="h-full rounded-lg border-2 border-blue-300 bg-blue-50 p-1.5 flex flex-col gap-0.5">
+                        <div className="text-[8px] font-extrabold text-blue-400">ก่อน → A สอน</div>
+                        <div className="text-[10px] font-extrabold text-blue-800 leading-tight line-clamp-2">{record.from_subject_name}</div>
+                        <div className="text-[8px] text-blue-400">{record.from_classroom_name}</div>
+                        <div className="mt-auto text-[8px] font-bold text-emerald-600 bg-emerald-100 rounded px-1">หลัง → B สอนแทน</div>
+                      </div>
+                    </td>
+                  );
+                  if (isTo) return (
+                    <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'72px'}}>
+                      <div className="h-full rounded-lg border-2 border-emerald-300 bg-emerald-50 p-1.5 flex flex-col gap-0.5">
+                        <div className="text-[8px] font-extrabold text-emerald-400">ก่อน → B สอน</div>
+                        <div className="text-[10px] font-extrabold text-emerald-800 leading-tight line-clamp-2">{record.to_subject_name}</div>
+                        <div className="text-[8px] text-emerald-400">{record.to_classroom_name}</div>
+                        <div className="mt-auto text-[8px] font-bold text-blue-600 bg-blue-100 rounded px-1">หลัง → A สอนแทน</div>
+                      </div>
+                    </td>
+                  );
+                  return (
+                    <td key={slotId} className="border-r last:border-0 border-slate-100 p-0.5" style={{height:'72px'}}>
+                      <div className="h-full rounded bg-white flex items-center justify-center">
+                        <span className="text-slate-200 text-xs">—</span>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+          <div className="text-[10px] font-extrabold text-blue-400 uppercase mb-1">🔵 คาบที่แลกออก (A→B)</div>
+          <div className="font-extrabold text-sm text-blue-800">{record.from_day} คาบ {record.from_slot_id}</div>
+          <div className="text-xs text-slate-500 mt-0.5">{record.from_subject_name}</div>
+          <div className="text-xs text-blue-400">{record.from_classroom_name}</div>
+          <div className="text-[10px] text-slate-400 mt-1 border-t border-blue-100 pt-1">ให้ <span className="font-bold text-blue-600">{record.to_teacher_name}</span> สอนแทน</div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+          <div className="text-[10px] font-extrabold text-emerald-400 uppercase mb-1">🟢 คาบที่รับเข้า (B→A)</div>
+          <div className="font-extrabold text-sm text-emerald-800">{record.to_day} คาบ {record.to_slot_id}</div>
+          <div className="text-xs text-slate-500 mt-0.5">{record.to_subject_name}</div>
+          <div className="text-xs text-emerald-400">{record.to_classroom_name}</div>
+          <div className="text-[10px] text-slate-400 mt-1 border-t border-emerald-100 pt-1">A ไปสอนแทน <span className="font-bold text-emerald-600">{record.to_teacher_name}</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Print Modal ─────────────────────────────────────────────
+function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }: {
+  mode: "teacher"|"overview";
+  history: SwapHistory[];
+  termInfo: {year:string;semester:string};
+  teacherId: string;
+  allTeachers: {id:string;full_name:string;department?:string}[];
+  onClose: ()=>void;
+}) {
+  const teacherRecords = history.filter(h => h.requester_id===teacherId || h.to_teacher_id===teacherId);
+  const teacherName = allTeachers.find(t=>t.id===teacherId)?.full_name || "ครู";
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto print:p-0 print:bg-white">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-4 print:shadow-none print:rounded-none print:my-0 print:max-w-full">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 print:hidden">
+          <h2 className="font-extrabold text-slate-800">
+            {mode==="teacher" ? `🖨️ ใบสรุปการแลกคาบ — ${teacherName}` : "🖨️ รายงานภาพรวมการแลกคาบ"}
+          </h2>
+          <div className="flex gap-2">
+            <button onClick={()=>window.print()} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700">🖨️ พิมพ์ / บันทึก PDF</button>
+            <button onClick={onClose} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-200">✕ ปิด</button>
+          </div>
+        </div>
+        <div className="p-8 print:p-6" style={{fontFamily:"'Sarabun', sans-serif"}}>
+          <div className="text-center mb-6 border-b-2 border-slate-300 pb-4">
+            <div className="text-xl font-extrabold text-slate-900">
+              {mode==="teacher" ? "ใบสรุปการแลกคาบสอน" : "รายงานภาพรวมการแลกคาบสอน"}
+            </div>
+            <div className="text-sm text-slate-500 mt-1">
+              ปีการศึกษา {termInfo.year} ภาคเรียนที่ {termInfo.semester}
+              {mode==="teacher" && <span className="ml-2">· {teacherName}</span>}
+            </div>
+            <div className="text-xs text-slate-400 mt-0.5">
+              พิมพ์เมื่อ {new Date().toLocaleDateString("th-TH",{day:"numeric",month:"long",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+            </div>
+          </div>
+
+          {mode==="teacher" ? (
+            <div>
+              {teacherRecords.length===0 ? (
+                <p className="text-center text-slate-400 py-8">ไม่มีประวัติการแลกคาบ</p>
+              ) : (
+                <>
+                  <div className="mb-6">
+                    <div className="text-sm font-extrabold text-slate-600 mb-3">📋 รายการการแลกทั้งหมด</div>
+                    <table style={{borderCollapse:"collapse",width:"100%",fontSize:"11px"}}>
+                      <thead>
+                        <tr style={{background:"#f8fafc"}}>
+                          {["ครั้งที่","วันที่","คาบที่แลกออก","คาบที่รับเข้า/ต้องคืน","ครูที่เกี่ยวข้อง"].map(h=>(
+                            <th key={h} style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"left",color:"#64748b",fontWeight:700}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {teacherRecords.map((h,i)=>(
+                          <tr key={h.id} style={{background:i%2===0?"white":"#f8fafc"}}>
+                            <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"center",color:"#94a3b8"}}>{i+1}</td>
+                            <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#64748b",fontSize:"10px"}}>
+                              {new Date(h.created_at).toLocaleDateString("th-TH",{day:"numeric",month:"short"})}
+                            </td>
+                            <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
+                              <div style={{fontWeight:700,color:"#1d4ed8"}}>{h.from_day} คาบ {h.from_slot_id}</div>
+                              <div style={{color:"#64748b",fontSize:"10px"}}>{h.from_subject_name} · {h.from_classroom_name}</div>
+                            </td>
+                            <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
+                              <div style={{fontWeight:700,color:"#059669"}}>{h.to_day} คาบ {h.to_slot_id}</div>
+                              <div style={{color:"#64748b",fontSize:"10px"}}>{h.to_subject_name} · {h.to_classroom_name}</div>
+                            </td>
+                            <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#64748b",fontSize:"10px"}}>
+                              {h.requester_id===teacherId ? `สอนแทนโดย ${h.to_teacher_name}` : `สอนแทน ${h.requester_name}`}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{marginTop:"40px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"40px"}}>
+                    {[["ครู A (ผู้แลกออก)",teacherName],["หัวหน้ากลุ่มสาระ",""]].map(([role,name])=>(
+                      <div key={role} style={{textAlign:"center"}}>
+                        <div style={{borderTop:"1px solid #475569",paddingTop:"8px",marginTop:"40px"}}>
+                          <div style={{fontWeight:700,color:"#1e293b"}}>{name||"................................"}</div>
+                          <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{role}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div className="mb-4 flex gap-6 text-sm">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center">
+                  <div className="text-2xl font-extrabold text-indigo-600">{history.length}</div>
+                  <div className="text-slate-500">การแลกทั้งหมด</div>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center">
+                  <div className="text-2xl font-extrabold text-emerald-600">
+                    {new Set(history.map(h=>h.requester_id)).size}
+                  </div>
+                  <div className="text-slate-500">ครูที่เกี่ยวข้อง</div>
+                </div>
+              </div>
+              <table style={{borderCollapse:"collapse",width:"100%",fontSize:"11px"}}>
+                <thead>
+                  <tr style={{background:"#f8fafc"}}>
+                    {["#","วันที่","ผู้จัดการ","คาบที่แลกออก","คาบที่แลกเข้า","ครู B"].map(h=>(
+                      <th key={h} style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"left",color:"#64748b",fontWeight:700}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h,i)=>(
+                    <tr key={h.id} style={{background:i%2===0?"white":"#f8fafc"}}>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"center",color:"#94a3b8"}}>{i+1}</td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#64748b",fontSize:"10px",whiteSpace:"nowrap"}}>
+                        {new Date(h.created_at).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"numeric"})}
+                      </td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",fontWeight:700,color:"#1e293b"}}>{h.requester_name}</td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
+                        <div style={{fontWeight:700,color:"#1d4ed8"}}>{h.from_day} คาบ {h.from_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"10px"}}>{h.from_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"9px"}}>{h.from_classroom_name}</div>
+                      </td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
+                        <div style={{fontWeight:700,color:"#059669"}}>{h.to_day} คาบ {h.to_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"10px"}}>{h.to_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"9px"}}>{h.to_classroom_name}</div>
+                      </td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#475569"}}>{h.to_teacher_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+      <style>{`
+        @media print {
+          body > * { display: none !important; }
+          .fixed.inset-0 { display: block !important; position: static !important; background: white !important; }
+          .fixed.inset-0 > div { box-shadow: none !important; border-radius: 0 !important; max-width: 100% !important; margin: 0 !important; }
+          @page { margin: 1.5cm; size: A4; }
         }
-      } else {
-        setSameRoomTeachers([]);
+      `}</style>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════
+export default function SwapPeriods() {
+  const [session,      setSession]      = useState<any>(null);
+  const [termInfo,     setTermInfo]     = useState<{year:number,semester:string}>({year:2569,semester:"1"});
+  const [allTeachers,  setAllTeachers]  = useState<{id:string,full_name:string,department?:string}[]>([]);
+
+  // ── ข้อมูลตารางสอนทั้งหมด (read-only, ไม่เคยถูกแก้ไข) ──
+  const [allAssignments, setAllAssignments] = useState<Assignment[]>([]);
+  // ── ประวัติการแลก (source of truth ของการแลก) ──
+  const [swapHistory,    setSwapHistory]    = useState<SwapHistory[]>([]);
+
+  // Step state
+  const [step, setStep] = useState<Step>(1);
+  const [tab,  setTab]  = useState<"swap"|"history">("swap");
+
+  // Step 1
+  const [teacherAId,      setTeacherAId]      = useState("");
+  const [teacherAPeriods, setTeacherAPeriods] = useState<Assignment[]>([]);
+
+  // Step 2
+  const [selectedPeriod, setSelectedPeriod] = useState<Assignment|null>(null);
+  const [options,        setOptions]        = useState<SwapOption[]>([]);
+  const [isSearching,    setIsSearching]    = useState(false);
+  const [showAll,        setShowAll]        = useState(false);
+
+  // Step 3
+  const [chosenOption, setChosenOption] = useState<SwapOption|null>(null);
+
+  // Misc
+  const [isLoading,        setIsLoading]        = useState(false);
+  const [toast,            setToast]            = useState<{msg:string;type:"success"|"error"}|null>(null);
+  const [expandedHistoryId,setExpandedHistoryId]= useState<number|null>(null);
+  const [confirmDeleteId,  setConfirmDeleteId]  = useState<number|null>(null);
+  const [deletingId,       setDeletingId]       = useState<number|null>(null);
+  const [printMode,        setPrintMode]        = useState<"teacher"|"overview"|null>(null);
+  const [printTeacherId,   setPrintTeacherId]   = useState("");
+
+  const fuzzyGrouped  = useMemo(()=>fuzzyGroupTeachers(allTeachers,0.8),[allTeachers]);
+  const teacherAName  = allTeachers.find(t=>t.id===teacherAId)?.full_name||"";
+  const groupedPeriods = useMemo(()=>{
+    const g:Record<string,Assignment[]>={};
+    for (const d of DAYS) g[d]=teacherAPeriods.filter(p=>p.day_of_week===d).sort((a,b)=>a.slot_id-b.slot_id);
+    return g;
+  },[teacherAPeriods]);
+
+  const displayedOptions = showAll ? options : options.slice(0,4);
+
+  function showToast(msg:string,type:"success"|"error"="success"){
+    setToast({msg,type}); setTimeout(()=>setToast(null),3500);
+  }
+
+  // ─── Load initial data ────────────────────────────────────
+  // โหลด termInfo ก่อน (await) แล้วค่อย loadAllData ด้วยค่าจริงจาก DB ทันที
+  // วิธีนี้ป้องกัน race condition ที่ useEffect([termInfo]) จะ fire ด้วยค่า default ก่อน
+  useEffect(()=>{
+    const saved = typeof window!=="undefined" ? localStorage.getItem("teacher_session") : null;
+    if (saved) setSession(JSON.parse(saved));
+    supabase.from("teachers").select("id,full_name,department").order("department").order("full_name")
+      .then(({data})=>{ if(data) setAllTeachers(data); });
+    loadInitialData();
+  },[]);
+
+  async function loadInitialData() {
+    const { data: settings } = await supabase
+      .from("academic_settings").select("*").eq("id",1).single();
+    const yr  = Number(settings?.year  ?? 2569);
+    const raw = String(settings?.semester ?? "1");
+    const sm  = raw === "3" ? "Summer" : raw;
+    setTermInfo({ year: yr, semester: sm });
+    // ส่งค่าตรงๆ ไม่รอ React re-render
+    await loadAllData(yr, sm);
+  }
+
+  // รับ yr/sm ตรง เพื่อไม่ต้องพึ่ง termInfo state ที่อาจยัง stale
+  async function loadAllData(yr?: number, sm?: string) {
+    const year = yr ?? termInfo.year;
+    const sem  = sm ?? termInfo.semester;
+    const semVariants = sem === "Summer" ? ["Summer","3"] : [sem];
+    const [{data:assigns},{data:swaps}] = await Promise.all([
+      // READ ONLY — ไม่มีการ update/insert/delete ที่ teaching_assignments เลย
+      supabase.from("teaching_assignments")
+        .select("*,subjects(code,name),classrooms(name),teachers(full_name)")
+        .eq("academic_year", year)
+        .in("semester", semVariants),
+      supabase.from("swap_history")
+        .select("*")
+        .eq("academic_year", year)
+        .eq("semester", sem)
+        .order("created_at",{ascending:false})
+        .limit(200),
+    ]);
+    const loaded = (assigns ?? []) as Assignment[];
+    console.log("[SwapPeriods] loadAllData →", { year, sem, semVariants, assignCount: loaded.length, swapCount: (swaps??[]).length });
+    if (assigns) setAllAssignments(loaded);
+    if (swaps)   setSwapHistory(swaps as SwapHistory[]);
+    return loaded; // คืนค่าให้ handleSelectTeacherA ใช้ได้ทันที
+  }
+
+  // ─── Step 1: เลือกครู ─────────────────────────────────────
+  async function handleSelectTeacherA(id:string) {
+    setTeacherAId(id);
+    setSelectedPeriod(null); setOptions([]); setChosenOption(null); setStep(1);
+    if (!id) { setTeacherAPeriods([]); return; }
+
+    // ใช้ allAssignments จาก state (โหลดแล้วตอน init)
+    // แต่ถ้ายังว่าง (race condition) ให้ query ตรงเพื่อความแน่ใจ
+    let assignments = allAssignments;
+    if (assignments.length === 0) {
+      assignments = await loadAllData();
+    }
+
+    const originalPeriods = assignments.filter(a => a.teacher_id === id);
+    console.log("[SwapPeriods] handleSelectTeacherA →", { id, totalAssignments: assignments.length, periodsFound: originalPeriods.length });
+    // ตัวอย่างค่า semester ที่มีใน allAssignments
+    const semValues = [...new Set(assignments.map(a=>a.semester))];
+    console.log("[SwapPeriods] semesters in allAssignments:", semValues);
+    setTeacherAPeriods(originalPeriods);
+    if (originalPeriods.length > 0) setStep(2);
+  }
+
+
+  // ─── Step 2: เลือกคาบ ─────────────────────────────────────
+  async function handleSelectPeriod(period:Assignment) {
+    setSelectedPeriod(period); setOptions([]); setChosenOption(null);
+    setShowAll(false); setIsSearching(true); setStep(2);
+
+    // สร้าง "ตารางสอนจริง" ของ A หลัง overlay swap_history
+    // ยกเว้นคาบที่กำลังจะแลก
+    const aEffectiveBusy = resolveTeacherEffectiveSlots(teacherAId, allAssignments, swapHistory);
+    aEffectiveBusy.delete(`${period.day_of_week}-${period.slot_id}`); // เอาคาบนี้ออก เพราะจะแลกมันออกไป
+    const aSlotKey = `${period.day_of_week}-${period.slot_id}`;
+
+    // หาครู B ที่อยู่ในห้องเดียวกันกับ A (ไม่จำเป็นต้องคาบเดียวกัน)
+    const sameRoomAssigns = allAssignments.filter(a =>
+      a.classroom_id === period.classroom_id &&
+      a.teacher_id !== teacherAId
+    );
+    if (!sameRoomAssigns.length) {
+      showToast("ไม่พบครูคนอื่นในห้องเดียวกัน","error");
+      setIsSearching(false); return;
+    }
+
+    const teacherBIds = [...new Set(sameRoomAssigns.map(a=>a.teacher_id).filter(Boolean))];
+    const result: SwapOption[] = [];
+
+    for (const bId of teacherBIds) {
+      // ตารางสอนจริงของ B หลัง overlay
+      const bEffectiveBusy = resolveTeacherEffectiveSlots(bId, allAssignments, swapHistory);
+
+      // คาบของ B ที่อยู่ในห้องเดียวกัน (candidates ที่จะแลกด้วย)
+      const bCandidates = sameRoomAssigns.filter(a =>
+        a.teacher_id === bId && !a.is_locked
+      );
+
+      const teacherBInfo = allTeachers.find(t=>t.id===bId) ||
+        {id:bId, full_name:sameRoomAssigns.find(a=>a.teacher_id===bId)?.teachers?.full_name||"-", department:""};
+
+      for (const bc of bCandidates) {
+        const bCandidateSlotKey = `${bc.day_of_week}-${bc.slot_id}`;
+
+        // ตรวจทิศทางที่ 1: A ว่างในคาบของ B (A ไปสอนแทน B ได้)
+        const aCanTakeBSlot = !aEffectiveBusy.has(bCandidateSlotKey);
+
+        // ตรวจทิศทางที่ 2: B ว่างในคาบของ A (B มาสอนแทน A ได้)
+        // ต้องเอาคาบของ B เอง (bCandidateSlotKey) ออกก่อน เพราะหลังแลก B จะไม่สอนคาบนั้นแล้ว
+        const bBusyWithoutOwn = new Set([...bEffectiveBusy]);
+        bBusyWithoutOwn.delete(bCandidateSlotKey);
+        const bCanTakeASlot = !bBusyWithoutOwn.has(aSlotKey);
+
+        if (aCanTakeBSlot && bCanTakeASlot) {
+          result.push({ assignment: bc as Assignment, teacherB: teacherBInfo, bothWayOk: true });
+        }
       }
     }
-    setIsLoading(false);
+
+    result.sort((a,b)=>{
+      const sameA = a.assignment.classroom_id===period.classroom_id?0:1;
+      const sameB = b.assignment.classroom_id===period.classroom_id?0:1;
+      if (sameA!==sameB) return sameA-sameB;
+      return DAYS.indexOf(a.assignment.day_of_week)-DAYS.indexOf(b.assignment.day_of_week)||
+        a.assignment.slot_id-b.assignment.slot_id;
+    });
+
+    setOptions(result);
+    setIsSearching(false);
+    if (result.length>0) setStep(3);
+    else showToast("ไม่พบคาบที่แลกได้โดยไม่ชนตารางทั้งสองฝ่าย","error");
+  }
+
+  function handleChooseOption(opt:SwapOption) {
+    setChosenOption(opt); setStep(4);
+    setTimeout(()=>{ document.getElementById("confirm-section")?.scrollIntoView({behavior:"smooth"}); },100);
+  }
+
+  // ─── Confirm swap: เขียนแค่ swap_history เท่านั้น ──────────
+  // teaching_assignments ไม่ถูกแตะเลย
+  async function handleConfirmSwap() {
+    if (!selectedPeriod||!chosenOption||!session) return;
+    setIsLoading(true);
+    try {
+      const { error } = await supabase.from("swap_history").insert([{
+        requester_id:    session.id,
+        requester_name:  session.full_name,
+        from_day:        selectedPeriod.day_of_week,
+        from_slot_id:    selectedPeriod.slot_id,
+        from_classroom_id:   selectedPeriod.classroom_id,
+        from_classroom_name: selectedPeriod.classrooms?.name || "-",
+        from_subject_id:     selectedPeriod.subject_id,
+        from_subject_name:   selectedPeriod.subjects?.name  || "-",
+        to_day:          chosenOption.assignment.day_of_week,
+        to_slot_id:      chosenOption.assignment.slot_id,
+        to_classroom_id:     chosenOption.assignment.classroom_id,
+        to_classroom_name:   chosenOption.assignment.classrooms?.name || "-",
+        to_subject_id:       chosenOption.assignment.subject_id,
+        to_subject_name:     chosenOption.assignment.subjects?.name  || "-",
+        to_teacher_id:   chosenOption.teacherB.id,
+        to_teacher_name: chosenOption.teacherB.full_name,
+        academic_year:   Number(termInfo.year),
+        semester:        termInfo.semester,
+      }]);
+
+      if (error) throw error;
+
+      showToast("✅ บันทึกการแลกคาบสำเร็จ!");
+
+      // รีเฟรช swapHistory ใน state (ไม่ต้อง reload allAssignments เพราะไม่ได้แก้)
+      await loadAllData();
+
+      setStep(1); setTeacherAId(""); setTeacherAPeriods([]);
+      setSelectedPeriod(null); setOptions([]); setChosenOption(null);
+    } catch(err:any) {
+      showToast("เกิดข้อผิดพลาด: "+err.message,"error");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  // ─── ลบประวัติ: แค่ลบ swap_history record ────────────────
+  // ไม่ต้อง undo ใน teaching_assignments เพราะไม่เคยแก้มัน
+  async function handleDeleteHistory(h:SwapHistory) {
+    setDeletingId(h.id);
+    try {
+      const { error } = await supabase.from("swap_history").delete().eq("id",h.id);
+      if (error) throw error;
+      showToast("↩️ ยกเลิกการแลกแล้ว — ตารางสอนกลับเป็นเดิมโดยอัตโนมัติ");
+      setSwapHistory(prev=>prev.filter(r=>r.id!==h.id));
+    } catch(err:any) {
+      showToast("เกิดข้อผิดพลาด: "+err.message,"error");
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
+    }
   }
 
   async function loadHistory() {
-    const { data } = await supabase
-      .from("swap_history")
-      .select("*")
-      .eq("academic_year", termInfo.year)
-      .eq("semester", termInfo.semester)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (data) setHistory(data as SwapHistory[]);
+    const { data } = await supabase.from("swap_history").select("*")
+      .eq("academic_year",Number(termInfo.year)).eq("semester",termInfo.semester)
+      .order("created_at",{ascending:false}).limit(50);
+    if (data) setSwapHistory(data as SwapHistory[]);
   }
 
-  // เมื่อเลือกคาบที่อยากแลก → หาคู่แลกที่เหมาะสม
-  async function findCandidates(period: Assignment) {
-    setSelectedPeriod(period);
-    setTargetPeriod(null);
-    setCandidates([]);
-    setIsLoading(true);
-
-    try {
-      // 1. โหลดทุกคาบในห้องเดียวกัน (ยกเว้นคาบของตัวเอง)
-      const { data: sameRoom } = await supabase
-        .from("teaching_assignments")
-        .select(`*, subjects(code,name), classrooms(name), teachers(full_name)`)
-        .eq("classroom_id", period.classroom_id)
-        .eq("academic_year", termInfo.year)
-        .eq("semester", termInfo.semester)
-        .neq("id", period.id);
-
-      if (!sameRoom || sameRoom.length === 0) {
-        showToast("ไม่พบคาบอื่นในห้องเดียวกัน", "error");
-        setIsLoading(false);
-        return;
-      }
-
-      // 2. โหลดตารางสอนทั้งหมดของครู A (ตัวเอง) ในเทอมนี้
-      const { data: myAll } = await supabase
-        .from("teaching_assignments")
-        .select("day_of_week, slot_id")
-        .eq("teacher_id", session!.id)
-        .eq("academic_year", termInfo.year)
-        .eq("semester", termInfo.semester);
-
-      const myBusySlots = new Set((myAll||[]).map((a:any) => `${a.day_of_week}-${a.slot_id}`));
-
-      // 3. สำหรับแต่ละคาบผู้สมัคร ตรวจว่าแลกได้หรือเปล่า
-      const result: SwapCandidate[] = [];
-
-      for (const candidate of sameRoom as Assignment[]) {
-        if (!candidate.teacher_id) continue; // คาบที่ไม่มีครูข้าม
-        if (candidate.teacher_id === session!.id) continue; // ครูคนเดียวกัน ข้าม
-        if (candidate.is_locked) continue; // คาบล็อก ข้าม
-
-        // โหลดตารางของครู B (candidate teacher)
-        const { data: teacherBSchedule } = await supabase
-          .from("teaching_assignments")
-          .select("day_of_week, slot_id")
-          .eq("teacher_id", candidate.teacher_id)
-          .eq("academic_year", termInfo.year)
-          .eq("semester", termInfo.semester);
-
-        const teacherBBusy = new Set((teacherBSchedule||[]).map((a:any) => `${a.day_of_week}-${a.slot_id}`));
-
-        // เงื่อนไข: 
-        // - ครู A ต้องว่างในคาบของ B (ยกเว้นคาบของตัวเองที่จะแลก)
-        // - ครู B ต้องว่างในคาบของ A (ยกเว้นคาบของ B เองที่จะแลก)
-        const mySlotKey = `${period.day_of_week}-${period.slot_id}`;
-        const candidateSlotKey = `${candidate.day_of_week}-${candidate.slot_id}`;
-
-        const myBusyWithoutOwn = new Set([...myBusySlots].filter(k => k !== mySlotKey));
-        const teacherBBusyWithoutOwn = new Set([...teacherBBusy].filter(k => k !== candidateSlotKey));
-
-        const aFreeInBSlot = !myBusyWithoutOwn.has(candidateSlotKey);
-        const bFreeInASlot = !teacherBBusyWithoutOwn.has(mySlotKey);
-
-        if (aFreeInBSlot && bFreeInASlot) {
-          result.push({ assignment: candidate, reason: "✅ แลกได้ 100% ไม่ชนทั้งสองฝ่าย" });
-        }
-      }
-
-      setCandidates(result);
-      if (result.length === 0) showToast("ไม่มีคาบที่แลกได้โดยไม่ชน กรุณาเลือกคาบอื่น", "error");
-    } catch (err: any) {
-      showToast("เกิดข้อผิดพลาด: " + err.message, "error");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function confirmSwap() {
-    if (!selectedPeriod || !targetPeriod || !session) return;
-    setIsLoading(true);
-    setConfirmOpen(false);
-
-    try {
-      // Swap: สลับ teacher_id ระหว่างสองคาบ
-      const teacherA = myTeacherId; // ครู A
-      const teacherB = viewTeacherId; // ครู B
-
-      const [r1, r2] = await Promise.all([
-        supabase.from("teaching_assignments").update({ teacher_id: teacherB }).eq("id", selectedPeriod.id),
-        supabase.from("teaching_assignments").update({ teacher_id: teacherA }).eq("id", targetPeriod.id),
-      ]);
-
-      if (r1.error || r2.error) throw r1.error || r2.error;
-
-      // บันทึกประวัติ
-      await supabase.from("swap_history").insert([{
-        requester_id: session.id,
-        requester_name: session.full_name,
-        from_day: selectedPeriod.day_of_week,
-        from_slot_id: selectedPeriod.slot_id,
-        from_classroom_id: selectedPeriod.classroom_id,
-        from_classroom_name: selectedPeriod.classrooms?.name || "-",
-        from_subject_id: selectedPeriod.subject_id,
-        from_subject_name: selectedPeriod.subjects?.name || "-",
-        to_day: targetPeriod.day_of_week,
-        to_slot_id: targetPeriod.slot_id,
-        to_classroom_id: targetPeriod.classroom_id,
-        to_classroom_name: targetPeriod.classrooms?.name || "-",
-        to_subject_id: targetPeriod.subject_id,
-        to_subject_name: targetPeriod.subjects?.name || "-",
-        to_teacher_id: teacherB,
-        to_teacher_name: targetPeriod.teachers?.full_name || "-",
-        academic_year: termInfo.year,
-        semester: termInfo.semester,
-      }]);
-
-      showToast("✅ สลับคาบสำเร็จ!");
-      setSelectedPeriod(null);
-      setTargetPeriod(null);
-      setCandidates([]);
-      await loadMyPeriods();
-    } catch (err: any) {
-      showToast("เกิดข้อผิดพลาด: " + err.message, "error");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  const fuzzyGrouped = useMemo(() => fuzzyGroupTeachers(allTeachers, 0.8), [allTeachers]);
-
-  const groupedMyPeriods = useMemo(() => {
-    const g: Record<string, Assignment[]> = {};
-    for (const d of DAYS) g[d] = myPeriods.filter(p => p.day_of_week === d).sort((a,b) => a.slot_id - b.slot_id);
-    return g;
-  }, [myPeriods]);
-
-  if (!session) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="text-center p-8">
-          <div className="text-4xl mb-3">🔒</div>
-          <p className="text-slate-600 mb-4">กรุณา login ก่อนใช้งาน</p>
-          <Link href="/" className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-indigo-700">ไปหน้า Login</Link>
-        </div>
+  if (!session) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-center p-8">
+        <div className="text-4xl mb-3">🔒</div>
+        <p className="text-slate-600 mb-4">กรุณา login ก่อนใช้งาน</p>
+        <Link href="/" className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-indigo-700">ไปหน้า Login</Link>
       </div>
-    );
-  }
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      {/* Toast */}
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800" style={{fontSize:"17px"}}>
+
       {toast && (
-        <div className={`fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium transition-all ${toast.type === "success" ? "bg-emerald-500" : "bg-red-500"}`}>
-          {toast.msg}
-        </div>
+        <div className={`fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-white font-medium
+          ${toast.type==="success"?"bg-emerald-500":"bg-red-500"}`}>{toast.msg}</div>
       )}
 
-      {/* Confirm Modal */}
-      {confirmOpen && selectedPeriod && targetPeriod && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border p-6 space-y-5">
-            <h3 className="text-lg font-bold text-slate-800 text-center">🔄 ยืนยันการสลับคาบ</h3>
+      <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
-                <div className="text-xs text-blue-400 font-bold uppercase mb-1">คาบของคุณ</div>
-                <div className="font-bold text-blue-800 text-sm">{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id}</div>
-                <div className="text-xs text-blue-600 mt-1">{selectedPeriod.subjects?.name}</div>
-                <div className="text-xs text-blue-400">ห้อง {selectedPeriod.classrooms?.name}</div>
-              </div>
-              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-center">
-                <div className="text-xs text-indigo-400 font-bold uppercase mb-1">คาบที่แลก</div>
-                <div className="font-bold text-indigo-800 text-sm">{targetPeriod.day_of_week} คาบ {targetPeriod.slot_id}</div>
-                <div className="text-xs text-indigo-600 mt-1">{targetPeriod.subjects?.name}</div>
-                <div className="text-xs text-indigo-400">ครู {targetPeriod.teachers?.full_name}</div>
-              </div>
-            </div>
-
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
-              ⚠️ การสลับจะสลับเฉพาะ <strong>ครูผู้สอน</strong> วิชาและห้องยังคงเดิม และบันทึกประวัติไว้ในระบบ
-            </div>
-
-            <div className="flex gap-3">
-              <button onClick={() => setConfirmOpen(false)} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm hover:bg-slate-50">ยกเลิก</button>
-              <button onClick={confirmSwap} disabled={isLoading}
-                className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 disabled:opacity-50">
-                {isLoading ? "กำลังดำเนินการ..." : "✅ ยืนยันสลับเลย"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
         {/* Header */}
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">🔄 ระบบแลกคาบสอน</h1>
-            <p className="text-slate-500 text-sm mt-0.5">สวัสดี <span className="font-semibold text-indigo-600">{session.full_name}</span> · ปี {termInfo.year} เทอม {termInfo.semester}</p>
+            <h1 className="text-2xl font-extrabold text-slate-900 flex items-center gap-2">🔄 ระบบแลกคาบสอน</h1>
+            <p className="text-slate-400 text-sm mt-0.5">ปี {termInfo.year} เทอม {termInfo.semester}</p>
           </div>
-          <Link href="/" className="bg-white border border-slate-200 px-4 py-2 rounded-xl text-sm font-medium hover:bg-slate-50 shadow-sm">⬅ กลับ</Link>
+          <Link href="/" className="bg-white border border-slate-200 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-slate-50 shadow-sm">⬅ กลับ</Link>
+        </div>
+
+        {/* Info banner */}
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-700 flex items-start gap-2">
+          <span className="shrink-0 mt-0.5">ℹ️</span>
+          <span>ระบบนี้ <strong>ไม่แก้ตารางสอนจริง</strong> — บันทึกเฉพาะ "บันทึกการแลก" ไว้ใน swap_history การยกเลิกแค่ลบ record นั้นออก ตารางสอนเดิมยังคงเดิมเสมอ</span>
         </div>
 
         {/* Tabs */}
         <div className="flex gap-1 bg-white border border-slate-200 rounded-xl p-1 w-fit shadow-sm">
-          {([["swap","🔄 แลกคาบ"],["history","📋 ประวัติ"]] as const).map(([v,l]) => (
-            <button key={v} onClick={() => { setTab(v); if(v==="history") loadHistory(); }}
-              className={`px-5 py-2 rounded-lg text-sm font-bold transition ${tab===v?"bg-indigo-600 text-white shadow":"text-slate-500 hover:bg-slate-50"}`}>
+          {([["swap","🔄 แลกคาบ"],["history","📋 ประวัติ"]] as const).map(([v,l])=>(
+            <button key={v} onClick={()=>{ setTab(v); if(v==="history") loadHistory(); }}
+              className={`px-5 py-2 rounded-lg text-sm font-bold transition
+                ${tab===v?"bg-indigo-600 text-white shadow":"text-slate-500 hover:bg-slate-50"}`}>
               {l}
             </button>
           ))}
         </div>
 
-        {tab === "swap" && (
-          <div className="space-y-5">
-            {/* Step 1: เลือกคาบของตัวเอง */}
+        {/* ══════════════════ TAB: SWAP ══════════════════ */}
+        {tab==="swap" && (<>
+
+          {/* Step indicator */}
+          <div className="flex items-center gap-2">
+            {[{n:1,label:"เลือกครู"},{n:2,label:"เลือกคาบ"},{n:3,label:"เลือกการแลก"},{n:4,label:"ยืนยัน"}].map((s,i)=>(
+              <div key={s.n} className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-extrabold transition
+                  ${step>s.n?"bg-emerald-500 text-white":step===s.n?"bg-indigo-600 text-white":"bg-slate-200 text-slate-400"}`}>
+                  {step>s.n?"✓":s.n}
+                </div>
+                <span className={`text-xs font-semibold hidden sm:block ${step===s.n?"text-indigo-600":"text-slate-400"}`}>{s.label}</span>
+                {i<3 && <div className={`h-0.5 w-6 ${step>s.n?"bg-emerald-400":"bg-slate-200"}`}/>}
+              </div>
+            ))}
+          </div>
+
+          {/* ── STEP 1 ── */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100">
+              <div className="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-1">ขั้นตอนที่ 1</div>
+              <h2 className="text-lg font-extrabold text-slate-800">เลือกครูที่ต้องการแลกคาบ</h2>
+              <p className="text-sm text-slate-400 mt-0.5">เช่น ครูที่ป่วย หรืออยากย้ายคาบสอน</p>
+            </div>
+            <div className="px-6 py-5">
+              <select value={teacherAId} onChange={e=>handleSelectTeacherA(e.target.value)}
+                className="w-full p-4 text-base font-bold border-2 border-indigo-300 rounded-2xl bg-indigo-50 outline-none focus:ring-4 ring-indigo-100 appearance-none cursor-pointer"
+                style={{fontSize:"17px"}}>
+                <option value="">— เลือกชื่อครู —</option>
+                {fuzzyGrouped.map(([dept,list])=>(
+                  <optgroup key={dept} label={`📂 ${dept}`}>
+                    {list.map(t=><option key={t.id} value={t.id}>{t.full_name}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              {!teacherAId && allAssignments.length===0 && (
+                <p className="text-center text-slate-400 text-sm mt-3">⏳ กำลังโหลดข้อมูล...</p>
+              )}
+              {teacherAId && teacherAPeriods.length===0 && (
+                <p className="text-center text-slate-400 text-sm mt-3">ครูท่านนี้ไม่มีคาบสอนในเทอมนี้</p>
+              )}
+            </div>
+          </div>
+
+          {/* ── STEP 2 ── */}
+          {teacherAId && teacherAPeriods.length>0 && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3">
-                <span className="w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center">1</span>
-                <div className="flex-1">
-                  <h2 className="font-bold text-slate-800">เลือกคาบที่ต้องการแลก</h2>
-                  <p className="text-xs text-slate-400 mt-0.5">เลือกดูตารางสอนของครูคนใดก็ได้</p>
+              <div className="px-6 py-5 border-b border-slate-100">
+                <div className="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-1">ขั้นตอนที่ 2</div>
+                <h2 className="text-lg font-extrabold text-slate-800">เลือกคาบที่ต้องการแลกออก</h2>
+                <p className="text-sm text-slate-400 mt-0.5">ตารางสอนของ <span className="font-bold text-slate-600">{teacherAName}</span>
+                  <span className="ml-2 text-xs text-blue-400">(รวมคาบที่รับแทนจากการแลกก่อนหน้า)</span>
+                </p>
+              </div>
+              <div className="px-6 py-5 space-y-5">
+                {DAYS.map(day=>groupedPeriods[day].length>0&&(
+                  <div key={day}>
+                    <div className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mb-3">{day}</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {groupedPeriods[day].map(p=>{
+                        // ตรวจว่าคาบนี้ถูกแลกออกไปแล้วใน swapHistory หรือเปล่า
+                        const alreadySwapped = swapHistory.some(h=>
+                          h.from_day===p.day_of_week && h.from_slot_id===p.slot_id &&
+                          h.from_classroom_id===p.classroom_id
+                        );
+                        return (
+                          <button key={p.id} onClick={()=>!alreadySwapped&&handleSelectPeriod(p)}
+                            disabled={alreadySwapped}
+                            className={`text-left p-4 rounded-2xl border-2 transition active:scale-95
+                              ${alreadySwapped
+                                ? "border-slate-100 bg-slate-50 opacity-50 cursor-not-allowed"
+                                : selectedPeriod?.id===p.id
+                                  ? "border-indigo-500 bg-indigo-600 text-white shadow-lg shadow-indigo-200"
+                                  : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50"}`}>
+                            <div className={`text-xs font-bold mb-1 ${selectedPeriod?.id===p.id?"text-indigo-200":"text-slate-400"}`}>
+                              คาบ {p.slot_id} · {SLOT_TIME[p.slot_id]}
+                            </div>
+                            <div className="font-extrabold text-base leading-tight">{p.subjects?.name}</div>
+                            <div className={`text-sm mt-1 ${selectedPeriod?.id===p.id?"text-indigo-200":"text-slate-400"}`}>
+                              {p.subjects?.code} · ห้อง {p.classrooms?.name}
+                            </div>
+                            {alreadySwapped && <div className="mt-2 text-xs bg-amber-100 text-amber-700 rounded-lg px-2 py-1 inline-block font-bold">🔄 แลกออกแล้ว</div>}
+                            {selectedPeriod?.id===p.id && <div className="mt-2 text-xs bg-white/20 rounded-lg px-2 py-1 inline-block font-bold">👆 เลือกอยู่</div>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Loading */}
+          {isSearching && (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-6 py-8 text-center">
+              <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"/>
+              <p className="font-bold text-slate-600">กำลังค้นหาคาบที่แลกได้...</p>
+              <p className="text-sm text-slate-400 mt-1">ตรวจสอบทั้ง 2 ทิศทาง ไปและกลับ</p>
+            </div>
+          )}
+
+          {/* ── STEP 3 ── */}
+          {!isSearching && selectedPeriod && options.length>0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-6 py-5 border-b border-slate-100">
+                <div className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-1">ขั้นตอนที่ 3</div>
+                <h2 className="text-lg font-extrabold text-slate-800">เลือกคาบที่จะแลกด้วย</h2>
+                <p className="text-sm text-slate-400 mt-0.5">ทุกตัวเลือกนี้ <span className="text-emerald-600 font-bold">ไป-กลับ ไม่ชนตารางทั้งสองฝ่าย ✅</span></p>
+              </div>
+
+              <div className="mx-6 mt-5 bg-indigo-50 border-2 border-indigo-200 rounded-2xl p-4 flex items-center gap-4">
+                <div className="text-2xl">📌</div>
+                <div>
+                  <div className="text-xs font-bold text-indigo-400 uppercase mb-0.5">คาบที่จะแลกออก</div>
+                  <div className="font-extrabold text-base">{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id} · {selectedPeriod.subjects?.name}</div>
+                  <div className="text-sm text-indigo-400">{teacherAName} · ห้อง {selectedPeriod.classrooms?.name}</div>
                 </div>
               </div>
-              {/* Picker ครู A และ ครู B */}
-              <div className="px-5 pt-4 pb-4 border-b border-slate-100 space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* ครู A */}
-                  <div>
-                    <label className="text-xs font-bold text-indigo-600 uppercase block mb-1.5">
-                      👤 ครู A — ที่ต้องการแลกคาบออก
-                    </label>
-                    <select
-                      className="w-full p-2.5 border-2 border-indigo-200 rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 ring-indigo-300 font-medium"
-                      value={myTeacherId}
-                      onChange={e => {
-                        setMyTeacherId(e.target.value);
-                        setSelectedPeriod(null); setCandidates([]); setTargetPeriod(null);
-                        loadTeacherAperiods(e.target.value);
-                      }}>
-                      <option value="">-- เลือกครู A --</option>
-                      {fuzzyGrouped.map(([dept, list]) => (
-                        <optgroup key={dept} label={`📂 ${dept}`}>
-                          {list.map(t => (
-                            <option key={t.id} value={t.id}>{t.full_name}</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </div>
-                  {/* ครู B */}
-                  <div>
-                    <label className="text-xs font-bold text-violet-600 uppercase block mb-1.5">
-                      👤 ครู B — ที่จะรับคาบแทน
-                      {myTeacherId && sameRoomTeachers.length > 0 && (
-                        <span className="ml-2 font-normal text-violet-400 normal-case">
-                          (เฉพาะครูที่สอนห้องเดียวกัน {sameRoomTeachers.length} คน)
-                        </span>
-                      )}
-                    </label>
-                    <select
-                      className="w-full p-2.5 border-2 border-violet-200 rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 ring-violet-300 font-medium"
-                      value={viewTeacherId}
-                      onChange={e => {
-                        setViewTeacherId(e.target.value);
-                        setSelectedPeriod(null); setCandidates([]); setTargetPeriod(null);
-                        loadTeacherPeriods(e.target.value);
-                      }}>
-                      <option value="">-- เลือกครู B --</option>
-                      {(myTeacherId && sameRoomTeachers.length > 0 ? (
-                        // แสดงเฉพาะครูที่สอนห้องเดียวกัน จัดกลุ่มด้วย fuzzy
-                        fuzzyGroupTeachers(sameRoomTeachers, 0.8).map(([dept, list]) => (
-                          <optgroup key={dept} label={`📂 ${dept}`}>
-                            {list.map(t => (
-                              <option key={t.id} value={t.id}>{t.full_name}</option>
-                            ))}
-                          </optgroup>
-                        ))
-                      ) : (
-                        // fallback: แสดงทุกคน
-                        fuzzyGrouped.map(([dept, list]) => (
-                          <optgroup key={dept} label={`📂 ${dept}`}>
-                            {list.filter(t => t.id !== myTeacherId).map(t => (
-                              <option key={t.id} value={t.id}>{t.full_name}</option>
-                            ))}
-                          </optgroup>
-                        ))
-                      ))}
-                    </select>
-                  </div>
+
+              <div className="px-6 py-5">
+                <div className="text-sm font-bold text-emerald-600 mb-4">✅ พบ {options.length} คาบที่แลกได้ — เรียงจากดีที่สุด</div>
+                <div className="space-y-3">
+                  {displayedOptions.map((opt,idx)=>(
+                    <button key={opt.assignment.id} onClick={()=>handleChooseOption(opt)}
+                      className={`w-full text-left p-4 rounded-2xl border-2 transition active:scale-[0.99] flex items-center gap-4
+                        ${chosenOption?.assignment.id===opt.assignment.id
+                          ?"border-emerald-500 bg-emerald-50 shadow-md shadow-emerald-100"
+                          :"border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50"}`}>
+                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl flex-shrink-0
+                        ${idx===0?"bg-yellow-100":"bg-emerald-100"}`}>
+                        {idx===0?"⭐":"✅"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        {idx===0&&<div className="text-xs font-extrabold text-yellow-600 bg-yellow-100 px-2 py-0.5 rounded-full inline-block mb-1">แนะนำอันดับ 1</div>}
+                        <div className="text-sm text-slate-500">{opt.assignment.day_of_week} คาบ {opt.assignment.slot_id} · {SLOT_TIME[opt.assignment.slot_id]}</div>
+                        <div className="font-extrabold text-base leading-tight">{opt.assignment.subjects?.name}</div>
+                        <div className="text-sm text-slate-500 mt-0.5">👤 {opt.teacherB.full_name} · ห้อง {opt.assignment.classrooms?.name}</div>
+                        <div className="flex gap-3 mt-2 text-xs font-bold text-emerald-600">
+                          <span>✓ {teacherAName} ว่างคาบนั้น</span>
+                          <span>✓ {opt.teacherB.full_name} ว่างคาบนี้</span>
+                        </div>
+                      </div>
+                      <div className={`text-2xl font-extrabold flex-shrink-0 ${chosenOption?.assignment.id===opt.assignment.id?"text-emerald-500":"text-slate-300"}`}>
+                        {chosenOption?.assignment.id===opt.assignment.id?"✓":"→"}
+                      </div>
+                    </button>
+                  ))}
                 </div>
-                {myTeacherId && viewTeacherId && (
-                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2.5 text-xs text-indigo-700 flex items-center gap-2">
-                    <span>✅</span>
-                    <span>เลือกครูครบแล้ว — กดที่คาบในตารางด้านล่างเพื่อเริ่มหาคาบที่แลกได้</span>
-                  </div>
+                {options.length>4&&!showAll&&(
+                  <button onClick={()=>setShowAll(true)}
+                    className="w-full mt-3 py-3 text-sm font-bold text-slate-500 hover:text-indigo-600">
+                    ดูทั้งหมด {options.length} คาบ ▼
+                  </button>
                 )}
               </div>
-              <div className="p-4">
-                {(() => {
-                  if (isLoading) return <div className="py-8 text-center text-slate-400 text-sm">⏳ กำลังโหลด...</div>;
-                  if (!myTeacherId || !viewTeacherId) return (
-                    <div className="py-8 text-center text-slate-400 text-sm">เลือกครู A และครู B ด้านบนก่อน</div>
-                  );
-                  if (myTeacherPeriods.length === 0) return <div className="py-8 text-center text-slate-400 text-sm">ครู A ไม่มีคาบสอนในเทอมนี้</div>;
-                  const grouped: Record<string,Assignment[]> = {};
-                  for (const d of DAYS) grouped[d] = myTeacherPeriods.filter(p => p.day_of_week === d).sort((a,b) => a.slot_id - b.slot_id);
-                  return (
-                    <div className="space-y-2">
-                      <div className="text-xs text-indigo-600 font-bold px-1 mb-2 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                        คาบสอนของ {allTeachers.find(t=>t.id===myTeacherId)?.full_name}
-                        <span className="font-normal text-slate-400 ml-1">— กดคาบที่ต้องการแลกออก</span>
-                      </div>
-                      {DAYS.map(day => grouped[day].length > 0 && (
-                        <div key={day}>
-                          <div className="text-xs font-bold text-slate-400 uppercase mb-1.5 px-1">{day}</div>
-                          <div className="flex flex-wrap gap-2">
-                            {grouped[day].map(p => (
-                              <button key={p.id}
-                                onClick={() => findCandidates(p)}
-                                className={`flex flex-col items-start px-3 py-2 rounded-xl border-2 text-left transition text-sm
-                                  ${selectedPeriod?.id === p.id
-                                    ? "border-indigo-500 bg-indigo-50 ring-2 ring-indigo-200"
-                                    : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/50"}`}>
-                                <span className="font-bold text-slate-700">คาบ {p.slot_id} <span className="font-normal text-slate-400 text-xs">({SLOT_LABELS[p.slot_id]})</span></span>
-                                <span className="text-xs text-indigo-600 font-medium mt-0.5">{p.subjects?.code} {p.subjects?.name}</span>
-                                <span className="text-xs text-slate-400">ห้อง {p.classrooms?.name}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
+            </div>
+          )}
+
+          {/* ── STEP 4 ── */}
+          {chosenOption && selectedPeriod && (
+            <div id="confirm-section" className="bg-white rounded-2xl border-2 border-indigo-200 shadow-md overflow-hidden">
+              <div className="px-6 py-5 border-b border-slate-100">
+                <div className="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-1">ขั้นตอนที่ 4</div>
+                <h2 className="text-lg font-extrabold text-slate-800">ยืนยันการแลกคาบ</h2>
+              </div>
+              <div className="px-6 py-5">
+                <SwapTimetable
+                  teacherAPeriods={teacherAPeriods}
+                  teacherBOption={chosenOption}
+                  selectedPeriod={selectedPeriod}
+                  teacherAName={teacherAName}
+                  swapHistory={swapHistory}
+                  allAssignments={allAssignments}
+                />
+
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-4 space-y-2">
+                  <div className="text-xs font-extrabold text-slate-500 uppercase mb-2">✅ ตรวจสอบ 2 ทิศทางแล้ว</div>
+                  <div className="flex items-start gap-3 text-sm">
+                    <span className="text-blue-500 font-bold shrink-0">→</span>
+                    <span><strong>{chosenOption.teacherB.full_name}</strong> ว่างในวัน{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id} — <span className="text-emerald-600 font-bold">รับสอนแทนได้</span></span>
+                  </div>
+                  <div className="flex items-start gap-3 text-sm">
+                    <span className="text-emerald-500 font-bold shrink-0">←</span>
+                    <span><strong>{teacherAName}</strong> ว่างในวัน{chosenOption.assignment.day_of_week} คาบ {chosenOption.assignment.slot_id} — <span className="text-emerald-600 font-bold">กลับมาคืนคาบได้</span></span>
+                  </div>
+                </div>
+
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm text-emerald-700 mb-4">
+                  ✅ ระบบจะ<strong>บันทึก swap_history เท่านั้น</strong> — ตารางสอนจริงไม่เปลี่ยนแปลง การยกเลิกแค่ลบ record นี้ออก
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={()=>{setChosenOption(null);setStep(3);}}
+                    className="flex-1 py-3.5 rounded-2xl border-2 border-slate-200 text-slate-600 font-bold hover:bg-slate-50 transition text-base">
+                    ← ย้อนกลับ
+                  </button>
+                  <button onClick={handleConfirmSwap} disabled={isLoading}
+                    className="flex-1 py-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-200 text-base">
+                    {isLoading?"กำลังบันทึก...":"✅ ยืนยันบันทึกการแลก"}
+                  </button>
+                </div>
               </div>
             </div>
+          )}
 
-            {/* Comparison Timetable: ตารางสอนเปรียบเทียบ 2 ครู แบบ visual */}
-            {myTeacherId && viewTeacherId && viewTeacherId !== "pick" && (myTeacherPeriods.length > 0 || viewPeriods.length > 0) && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-100">
-                  <h2 className="font-bold text-slate-800 mb-2">📊 ตารางสอนเปรียบเทียบ</h2>
-                  <div className="flex flex-wrap gap-3 text-xs">
-                    <span className="flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-indigo-100 border border-indigo-300 inline-block"></span><span className="font-medium text-indigo-700">{session?.full_name}</span></span>
-                    <span className="flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-violet-100 border border-violet-300 inline-block"></span><span className="font-medium text-violet-700">{allTeachers.find(t=>t.id===viewTeacherId)?.full_name}</span></span>
-                    <span className="flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-slate-100 border border-slate-200 inline-block"></span><span className="text-slate-400">ติดสอนทั้งคู่</span></span>
-                    <span className="flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-emerald-100 border border-emerald-300 inline-block"></span><span className="text-emerald-600 font-medium">ว่างทั้งคู่ — แลกได้</span></span>
-                    <span className="flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-amber-100 border border-amber-300 inline-block"></span><span className="text-amber-600 font-medium">คาบที่ระบบแนะนำ</span></span>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="border-collapse" style={{minWidth:'700px', width:'100%', tableLayout:'fixed'}}>
-                    <colgroup>
-                      <col style={{width:'60px'}}/>
-                      {[1,2,3,4,5,6,7].map(s => <col key={s} style={{width:'calc((100% - 60px) / 7)'}}/>)}
-                    </colgroup>
-                    <thead>
-                      <tr className="bg-slate-50 border-b">
-                        <th className="p-2 border-r text-slate-400 text-xs font-medium text-center">วัน</th>
-                        {[1,2,3,4,5,6,7].map(s => (
-                          <th key={s} className="p-1.5 border-r last:border-0 text-center">
-                            <div className="text-[11px] font-bold text-slate-600">คาบ {s}</div>
-                            <div className="text-[9px] text-slate-400 font-normal leading-tight">{SLOT_LABELS[s]}</div>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {DAYS.map(day => (
-                        <tr key={day} className="border-b last:border-0">
-                          <td className="p-2 border-r bg-slate-50 font-bold text-center text-slate-600 text-xs">{day}</td>
-                          {[1,2,3,4,5,6,7].map(slotId => {
-                            const myP = myTeacherPeriods.find(p => p.day_of_week===day && p.slot_id===slotId);
-                            const otherP = viewPeriods.find(p => p.day_of_week===day && p.slot_id===slotId);
-                            const bothFree = !myP && !otherP;
-                            const isCandidate = candidates.some(c => c.assignment.day_of_week===day && c.assignment.slot_id===slotId);
-                            const isSelected = selectedPeriod?.day_of_week===day && selectedPeriod?.slot_id===slotId;
+        </>)}
 
-                            // กำหนดสีพื้นหลัง cell
-                            let cellBg = "bg-white";
-                            if (isSelected) cellBg = "bg-indigo-600";
-                            else if (isCandidate) cellBg = "bg-amber-50";
-                            else if (bothFree) cellBg = "bg-emerald-50";
-                            else if (myP && otherP) cellBg = "bg-slate-50";
-
-                            return (
-                              <td key={slotId}
-                                className={`border-r last:border-0 p-1 ${cellBg} transition`}
-                                style={{height:'90px', verticalAlign:'top'}}>
-                                <div className="flex flex-col gap-0.5 h-full">
-
-                                  {/* ว่างทั้งคู่ */}
-                                  {bothFree && (
-                                    <div className="flex-1 flex items-center justify-center">
-                                      <span className="text-emerald-500 text-[10px] font-bold">✓ ว่าง</span>
-                                    </div>
-                                  )}
-
-                                  {/* คาบของฉัน */}
-                                  {myP && (
-                                    <div
-                                      className={`flex-1 rounded-lg px-1.5 py-1 cursor-pointer transition
-                                        ${isSelected
-                                          ? 'bg-white/20 border border-white/40'
-                                          : isCandidate
-                                            ? 'bg-indigo-100 border border-indigo-300 hover:bg-indigo-200'
-                                            : 'bg-indigo-50 border border-indigo-200 hover:bg-indigo-100'}`}
-                                      onClick={() => findCandidates(myP)}>
-                                      <div className={`text-[9px] font-bold uppercase mb-0.5 ${isSelected ? 'text-white' : 'text-indigo-400'}`}>
-                                        {isSelected ? '👆 เลือกอยู่' : '👤 ฉัน'}
-                                      </div>
-                                      <div className={`text-[10px] font-bold leading-tight ${isSelected ? 'text-white' : 'text-indigo-800'}`}>
-                                        {myP.subjects?.code}
-                                      </div>
-                                      <div className={`text-[9px] leading-tight truncate ${isSelected ? 'text-white/80' : 'text-indigo-600'}`}>
-                                        {myP.subjects?.name}
-                                      </div>
-                                      <div className={`text-[8px] mt-0.5 ${isSelected ? 'text-white/60' : 'text-indigo-400'}`}>
-                                        ห้อง {myP.classrooms?.name}
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {/* คาบของครูอีกคน */}
-                                  {otherP && (
-                                    <div
-                                      className={`flex-1 rounded-lg px-1.5 py-1 cursor-pointer transition
-                                        ${isCandidate
-                                          ? 'bg-amber-100 border-2 border-amber-400 hover:bg-amber-200'
-                                          : 'bg-violet-50 border border-violet-200 hover:bg-violet-100'}`}
-                                      onClick={() => { if(isCandidate) setTargetPeriod(targetPeriod?.id===otherP.id ? null : otherP); }}>
-                                      {isCandidate && (
-                                        <div className="text-[9px] font-bold text-amber-600 mb-0.5">⚡ แลกได้!</div>
-                                      )}
-                                      {!isCandidate && (
-                                        <div className="text-[9px] font-bold text-violet-400 mb-0.5">👤 เขา</div>
-                                      )}
-                                      <div className={`text-[10px] font-bold leading-tight ${isCandidate ? 'text-amber-800' : 'text-violet-800'}`}>
-                                        {otherP.subjects?.code}
-                                      </div>
-                                      <div className={`text-[9px] leading-tight truncate ${isCandidate ? 'text-amber-700' : 'text-violet-600'}`}>
-                                        {otherP.subjects?.name}
-                                      </div>
-                                      <div className={`text-[8px] mt-0.5 ${isCandidate ? 'text-amber-500' : 'text-violet-400'}`}>
-                                        ห้อง {otherP.classrooms?.name}
-                                      </div>
-                                      {targetPeriod?.id === otherP.id && (
-                                        <div className="text-[8px] font-bold text-amber-700 mt-0.5">✓ เลือกแลกนี้</div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Step 2: รายการคาบที่แลกได้ */}
-            {selectedPeriod && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3">
-                  <span className="w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">2</span>
-                  <div>
-                    <h2 className="font-bold text-slate-800">เลือกคาบที่จะแลกด้วย</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      คาบที่แลกได้โดยไม่ชนตารางทั้งสองฝ่าย — กำลังมองหาคาบในห้อง <strong>{selectedPeriod.classrooms?.name}</strong>
-                    </p>
-                  </div>
-                </div>
-                <div className="p-4">
-                  {isLoading ? (
-                    <div className="py-8 text-center text-slate-400 text-sm">⏳ กำลังค้นหาคาบที่แลกได้...</div>
-                  ) : candidates.length === 0 ? (
-                    <div className="py-8 text-center space-y-2">
-                      <div className="text-3xl">😔</div>
-                      <p className="text-slate-500 text-sm">ไม่พบคาบที่แลกได้โดยไม่ชนตาราง</p>
-                      <p className="text-xs text-slate-400">ลองเลือกคาบอื่นของคุณดูครับ</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-xs text-emerald-600 font-bold px-1 mb-3">
-                        พบ {candidates.length} คาบที่แลกได้ 🎉
-                      </div>
-                      {candidates.map(({ assignment: c }) => (
-                        <button key={c.id}
-                          onClick={() => setTargetPeriod(targetPeriod?.id === c.id ? null : c)}
-                          className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl border-2 text-left transition
-                            ${targetPeriod?.id === c.id
-                              ? "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200"
-                              : "border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50"}`}>
-                          
-                          {/* คาบของครูอีกคน */}
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${targetPeriod?.id === c.id ? "bg-emerald-200 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
-                                {c.day_of_week} คาบ {c.slot_id}
-                              </span>
-                              <span className="text-xs text-slate-400">{SLOT_LABELS[c.slot_id]}</span>
-                            </div>
-                            <div className="mt-1.5 font-semibold text-slate-700 text-sm">{c.subjects?.code} — {c.subjects?.name}</div>
-                            <div className="text-xs text-slate-500 mt-0.5">👤 {c.teachers?.full_name} · ห้อง {c.classrooms?.name}</div>
-                          </div>
-
-                          <div className="shrink-0">
-                            {targetPeriod?.id === c.id
-                              ? <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold">✓</span>
-                              : <span className="w-6 h-6 rounded-full border-2 border-slate-300"></span>}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Step 3: Preview + Confirm */}
-            {selectedPeriod && targetPeriod && (
-              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-2xl border border-indigo-200 p-5 shadow-sm">
-                <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <span>🔍 ตรวจสอบก่อนสลับ</span>
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                  <div className="bg-white rounded-xl border border-blue-200 p-4">
-                    <div className="text-xs text-blue-400 font-bold uppercase mb-2">คาบของคุณ (ก่อน)</div>
-                    <div className="font-bold text-slate-800">{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id}</div>
-                    <div className="text-sm text-slate-600 mt-1">{selectedPeriod.subjects?.name}</div>
-                    <div className="text-xs text-slate-400">ห้อง {selectedPeriod.classrooms?.name}</div>
-                    <div className="mt-2 text-xs text-blue-500">👤 {session.full_name}</div>
-                  </div>
-
-                  <div className="flex items-center justify-center text-3xl">⇄</div>
-
-                  <div className="bg-white rounded-xl border border-indigo-200 p-4">
-                    <div className="text-xs text-indigo-400 font-bold uppercase mb-2">คาบที่แลก (ก่อน)</div>
-                    <div className="font-bold text-slate-800">{targetPeriod.day_of_week} คาบ {targetPeriod.slot_id}</div>
-                    <div className="text-sm text-slate-600 mt-1">{targetPeriod.subjects?.name}</div>
-                    <div className="text-xs text-slate-400">ห้อง {targetPeriod.classrooms?.name}</div>
-                    <div className="mt-2 text-xs text-indigo-500">👤 {targetPeriod.teachers?.full_name}</div>
-                  </div>
-                </div>
-
-                <div className="mt-4 bg-white/70 rounded-xl border border-indigo-100 p-3 text-xs text-slate-500 space-y-1">
-                  <div>✅ หลังสลับ: <strong className="text-slate-700">คุณ</strong> จะไปสอน{targetPeriod.subjects?.name} วัน{targetPeriod.day_of_week} คาบ {targetPeriod.slot_id} แทน</div>
-                  <div>✅ หลังสลับ: <strong className="text-slate-700">{targetPeriod.teachers?.full_name}</strong> จะมาสอน{selectedPeriod.subjects?.name} วัน{selectedPeriod.day_of_week} คาบ {selectedPeriod.slot_id} แทน</div>
-                </div>
-
-                <button onClick={() => setConfirmOpen(true)} disabled={isLoading}
-                  className="mt-4 w-full py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition text-sm shadow-md disabled:opacity-50">
-                  🔄 ยืนยันสลับคาบ
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Tab: ประวัติ */}
-        {tab === "history" && (
+        {/* ══════════════════ TAB: HISTORY ══════════════════ */}
+        {tab==="history" && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100">
-              <h2 className="font-bold text-slate-800">📋 ประวัติการแลกคาบ</h2>
-              <p className="text-xs text-slate-400 mt-0.5">ปี {termInfo.year} เทอม {termInfo.semester} · 50 รายการล่าสุด</p>
+            <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-extrabold text-slate-800 text-lg">📋 ประวัติการแลกคาบ</h2>
+                <p className="text-xs text-slate-400 mt-0.5">ปี {termInfo.year} เทอม {termInfo.semester} · {swapHistory.length} รายการ</p>
+              </div>
+              <button onClick={()=>setPrintMode("overview")}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl text-sm font-bold border border-indigo-200">
+                🖨️ พิมพ์รายงาน
+              </button>
             </div>
-            <div className="divide-y divide-slate-50">
-              {history.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-sm">ยังไม่มีประวัติการแลกคาบ</div>
-              ) : history.map(h => (
-                <div key={h.id} className="px-5 py-4 hover:bg-slate-50 transition">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1">
+            <div className="divide-y divide-slate-100">
+              {swapHistory.length===0 ? (
+                <div className="py-12 text-center text-slate-400">ยังไม่มีประวัติการแลกคาบ</div>
+              ) : swapHistory.map(h=>(
+                <div key={h.id}>
+                  <div className="px-6 py-4 hover:bg-slate-50 flex items-start gap-3">
+                    <button onClick={()=>setExpandedHistoryId(expandedHistoryId===h.id?null:h.id)}
+                      className="flex-1 text-left space-y-1.5 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-slate-800 text-sm">{h.requester_name}</span>
-                        <span className="text-xs text-slate-400">แลกคาบ</span>
-                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
-                          {h.from_day} คาบ {h.from_slot_id} · {h.from_classroom_name}
+                        <span className="font-bold text-slate-800">{h.requester_name}</span>
+                        <span className="text-slate-400 text-sm">จัดการแลก</span>
+                        <span className="text-xs text-slate-300">
+                          {new Date(h.created_at).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
                         </span>
-                        <span className="text-xs text-slate-400">⇄</span>
-                        <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">
-                          {h.to_day} คาบ {h.to_slot_id} · {h.to_classroom_name}
-                        </span>
-                        <span className="text-xs text-slate-400">กับ {h.to_teacher_name}</span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap text-sm">
+                        <span className="bg-blue-100 text-blue-700 px-2.5 py-0.5 rounded-full font-bold">{h.from_day} คาบ {h.from_slot_id}</span>
+                        <span className="text-slate-400 font-bold">⇄</span>
+                        <span className="bg-emerald-100 text-emerald-700 px-2.5 py-0.5 rounded-full font-bold">{h.to_day} คาบ {h.to_slot_id}</span>
                       </div>
                       <div className="text-xs text-slate-400">
-                        {h.from_subject_name} ⇄ {h.to_subject_name}
+                        {h.from_subject_name} · ห้อง {h.from_classroom_name}
+                        <span className="mx-1">⇄</span>
+                        {h.to_subject_name} · ห้อง {h.to_classroom_name}
+                        <span className="ml-2 text-slate-300">กับ {h.to_teacher_name}</span>
                       </div>
-                    </div>
-                    <div className="text-xs text-slate-300 shrink-0 text-right">
-                      {new Date(h.created_at).toLocaleDateString('th-TH', {day:'numeric',month:'short',year:'numeric'})}
-                      <br/>
-                      {new Date(h.created_at).toLocaleTimeString('th-TH', {hour:'2-digit',minute:'2-digit'})}
+                    </button>
+
+                    <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                      <button onClick={()=>{setPrintTeacherId(h.requester_id||"");setPrintMode("teacher");}}
+                        title="พิมพ์ใบสรุปครู"
+                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-500 text-sm">
+                        🖨️
+                      </button>
+                      {confirmDeleteId===h.id ? (
+                        <div className="flex gap-1">
+                          <button onClick={()=>handleDeleteHistory(h)} disabled={deletingId===h.id}
+                            className="px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 disabled:opacity-50">
+                            {deletingId===h.id?"...":"ยืนยัน"}
+                          </button>
+                          <button onClick={()=>setConfirmDeleteId(null)}
+                            className="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-200">
+                            ยกเลิก
+                          </button>
+                        </div>
+                      ):(
+                        <button onClick={()=>setConfirmDeleteId(h.id)} title="ยกเลิกการแลก"
+                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-red-50 hover:bg-red-100 text-red-400 text-sm">
+                          🗑️
+                        </button>
+                      )}
+                      <button onClick={()=>setExpandedHistoryId(expandedHistoryId===h.id?null:h.id)}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-400">
+                        <span className={`inline-block transition-transform ${expandedHistoryId===h.id?"rotate-180":""}`}>⌄</span>
+                      </button>
                     </div>
                   </div>
+
+                  {expandedHistoryId===h.id && (
+                    <div className="px-6 pb-5 bg-slate-50 border-t border-slate-100">
+                      <div className="pt-4"><HistoryTimetable record={h}/></div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
+
       </div>
 
-      {/* Loader */}
       {isLoading && (
         <div className="fixed bottom-5 right-5 bg-white p-3 rounded-xl shadow-xl border flex items-center gap-2 z-40">
-          <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+          <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"/>
           <span className="text-xs font-bold text-slate-500">กำลังประมวลผล...</span>
         </div>
+      )}
+
+      {printMode && (
+        <PrintModal
+          mode={printMode}
+          history={swapHistory}
+          termInfo={termInfo}
+          teacherId={printTeacherId}
+          allTeachers={allTeachers}
+          onClose={()=>{setPrintMode(null);setPrintTeacherId("");}}
+        />
       )}
     </div>
   );

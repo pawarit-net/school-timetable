@@ -92,6 +92,21 @@ function getLevelPrefixFromTargetLevel(level: string): string | null {
   return map[level] ?? null;
 }
 
+// ─── Natural sort (เรียง 4/1, 4/2, ... 4/10 ได้ถูกต้อง) ──
+function naturalSort(a: string, b: string): number {
+  const re = /([\D]*)(\d+)/g;
+  let am: RegExpExecArray | null, bm: RegExpExecArray | null;
+  let ai = 0, bi = 0;
+  while (true) {
+    am = re.exec(a); bm = re.exec(b);
+    if (!am && !bm) return a.localeCompare(b, 'th');
+    if (!am) return 1;
+    if (!bm) return -1;
+    const cmp = am[1].localeCompare(bm[1], 'th') || (parseInt(am[2]) - parseInt(bm[2]));
+    if (cmp !== 0) return cmp;
+  }
+}
+
 // --- Interfaces ---
 interface TimeSlot { id: number | string; label: string; time: string; isBreak?: boolean; }
 interface Classroom { id: string; name: string; }
@@ -206,11 +221,11 @@ export default function ManageAssignments() {
       if (settings) setTermInfo({ year: settings.year?.toString() || "2569", semester: settings.semester || "3" });
 
       const [rooms, subs, tchs] = await Promise.all([
-        supabase.from("classrooms").select("id, name").order('name'),
+        supabase.from("classrooms").select("id, name"),
         supabase.from("subjects").select("id, code, name").order('code'),
         supabase.from("teachers").select("id, full_name, department").order('full_name')
       ]);
-      if (rooms.data) setClassrooms(rooms.data);
+      if (rooms.data) setClassrooms([...rooms.data].sort((a,b)=>naturalSort(a.name,b.name)));
       if (subs.data) setSubjects(subs.data);
       if (tchs.data) setTeachers(tchs.data);
     } finally {
@@ -417,7 +432,7 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
       }).sort((a: any, b: any) => a.subject_code.localeCompare(b.subject_code))
     : null;
 
-  // --- 🤖 ฟังก์ชันจัดตารางอัตโนมัติ ---
+  // --- 🤖 ฟังก์ชันจัดตารางอัตโนมัติ (พร้อมแจ้งเหตุผลกรณีลงไม่ครบ) ---
   async function handleAutoAssign() {
     if (!selectedRoom) return alert("กรุณาเลือกห้องเรียนก่อน");
 
@@ -480,8 +495,6 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
         (existing || []).map((r: any) => `${r.subject_id}-${r.day_of_week}`)
       );
 
-      // ห้องที่มีครูสอนอยู่แล้ว (ข้ามห้อง) — ป้องกัน ห้องเดียวมีครู 2 คน
-      // key: "classroomId-day-slotId"
       const usedClassroomSlots = new Set<string>([
         ...(allRoomsExisting || [])
           .filter((r: any) => r.classroom_id && !r.activity_type)
@@ -516,6 +529,19 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
         })
         .filter((j: Job) => j.periods_needed > 0);
 
+      // เรียง job: วิชาที่มี constraint มากกว่า (ครูติดมาก) ไว้ก่อน
+      // นับจาก usedTeacherSlots ว่าครูคนนั้นติดกี่คาบ
+      const teacherBusyCount: Record<string, number> = {};
+      for (const key of usedTeacherSlots) {
+        const tid = key.split("-")[0];
+        teacherBusyCount[tid] = (teacherBusyCount[tid] || 0) + 1;
+      }
+      jobs.sort((a, b) => {
+        const aLoad = a.teacher_id ? (teacherBusyCount[a.teacher_id] || 0) : 0;
+        const bLoad = b.teacher_id ? (teacherBusyCount[b.teacher_id] || 0) : 0;
+        return bLoad - aLoad; // ครูที่ติดมากสุดจัดก่อน (ได้ slot เลือกมากกว่า)
+      });
+
       const allSlots: { day: string; slotId: number }[] = [];
       for (const day of days) {
         for (const slotId of realSlotIds) {
@@ -523,20 +549,29 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
         }
       }
 
-      let availableSlots = allSlots.filter(
-        s => !usedRoomSlots.has(`${s.day}-${s.slotId}`)
-      );
+      // Shuffle เพื่อกระจาย (ยังคงไว้สำหรับความหลากหลาย)
+      const shuffle = (arr: typeof allSlots) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      };
 
-      for (let i = availableSlots.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [availableSlots[i], availableSlots[j]] = [availableSlots[j], availableSlots[i]];
-      }
+      let availableSlots = shuffle(allSlots.filter(
+        s => !usedRoomSlots.has(`${s.day}-${s.slotId}`)
+      ));
 
       const toInsert: any[] = [];
+      // เก็บเหตุผลที่ลงไม่ครบต่อ job
+      const failLog: { subject_id: string; reasons: Record<string, number> }[] = [];
 
       for (const job of jobs) {
         let placed = 0;
         const newAvailable: typeof availableSlots = [];
+        const reasons: Record<string, number> = {
+          teacherBusy: 0, subjectSameDay: 0, mathRule: 0, classroomConflict: 0
+        };
 
         for (const slot of availableSlots) {
           if (placed >= job.periods_needed) {
@@ -547,10 +582,8 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
           const teacherBusy = job.teacher_id
             ? usedTeacherSlots.has(`${job.teacher_id}-${slot.day}-${slot.slotId}`)
             : false;
-
           const subjectSameDay = usedSubjectDays.has(`${job.subject_id}-${slot.day}`);
 
-          // ตรวจกฎ "คณิตห้ามติดคาบ" — ดูวิชาทั้งที่มีอยู่แล้ว + ที่จะ insert ในรอบนี้
           const jobSubjectName = subjects.find(s => s.id === job.subject_id)?.name || "";
           const existingSlotsInDay = [
             ...(existing || []).map((r: any) => ({
@@ -565,8 +598,6 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
               })),
           ].filter(r => r.slot_id !== slot.slotId);
           const violatesMathRule = wouldViolateMathAdjacentRule(jobSubjectName, slot.slotId, existingSlotsInDay);
-
-          // ห้องที่กำลังจัดมีครูอื่นสอนอยู่แล้ว (ข้ามห้อง) — ข้ามคาบนี้
           const classroomConflict = usedClassroomSlots.has(`${selectedRoom}-${slot.day}-${slot.slotId}`);
 
           if (!teacherBusy && !subjectSameDay && !violatesMathRule && !classroomConflict) {
@@ -581,19 +612,24 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
               academic_year: termInfo.year,
               semester: termInfo.semester,
             });
-
             usedRoomSlots.add(`${slot.day}-${slot.slotId}`);
             usedSubjectDays.add(`${job.subject_id}-${slot.day}`);
             usedClassroomSlots.add(`${selectedRoom}-${slot.day}-${slot.slotId}`);
-            if (job.teacher_id) {
-              usedTeacherSlots.add(`${job.teacher_id}-${slot.day}-${slot.slotId}`);
-            }
+            if (job.teacher_id) usedTeacherSlots.add(`${job.teacher_id}-${slot.day}-${slot.slotId}`);
             placed++;
           } else {
+            // บันทึกเหตุผล
+            if (teacherBusy)         reasons.teacherBusy++;
+            if (subjectSameDay)      reasons.subjectSameDay++;
+            if (violatesMathRule)    reasons.mathRule++;
+            if (classroomConflict)   reasons.classroomConflict++;
             newAvailable.push(slot);
           }
         }
 
+        if (placed < job.periods_needed) {
+          failLog.push({ subject_id: job.subject_id, reasons });
+        }
         availableSlots = newAvailable;
       }
 
@@ -602,6 +638,28 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
           .from("teaching_assignments")
           .insert(toInsert);
         if (insertErr) throw insertErr;
+      }
+
+      // แจ้งผลถ้าลงไม่ครบ
+      if (failLog.length > 0) {
+        const lines = failLog.map(f => {
+          const subName = subjects.find(s => s.id === f.subject_id)?.name || f.subject_id;
+          const subCode = subjects.find(s => s.id === f.subject_id)?.code || "";
+          const r = f.reasons;
+          const why: string[] = [];
+          if (r.teacherBusy > 0)        why.push(`ครูติดคาบอื่น ${r.teacherBusy} คาบ`);
+          if (r.subjectSameDay > 0)     why.push(`วิชาซ้ำวัน ${r.subjectSameDay} คาบ`);
+          if (r.mathRule > 0)           why.push(`กฎคณิตติดกัน ${r.mathRule} คาบ`);
+          if (r.classroomConflict > 0)  why.push(`ห้องมีครูอื่นสอนแล้ว ${r.classroomConflict} คาบ`);
+          return `• ${subCode} ${subName}: ${why.join(", ") || "ไม่มีช่วงว่างพอ"}`;
+        });
+        alert(
+          `⚠️ จัดตารางไม่ครบ ${failLog.length} วิชา:\n\n${lines.join("\n")}\n\n` +
+          `💡 วิธีแก้:\n` +
+          `  - ลดภาระครูที่ติดคาบมาก\n` +
+          `  - ปรับจำนวนคาบ/สัปดาห์ในโครงสร้าง\n` +
+          `  - กดจัดอัตโนมัติอีกครั้ง (slot จะสลับใหม่)`
+        );
       }
 
     } catch (err: any) {
