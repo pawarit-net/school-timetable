@@ -197,6 +197,16 @@ export default function Home() {
             <MiniMenu href="/manage-classrooms" icon="🏢" label="ห้องเรียน" />
             <MiniMenu href="/settings" icon="⚙️" label="ตั้งค่าระบบ" />
           </div>
+          <div className="mt-4">
+            <Link href="/swap-periods" className="group flex items-center gap-4 p-5 bg-white rounded-2xl border border-violet-200 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all ring-4 ring-violet-50/50">
+              <div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center text-2xl group-hover:scale-110 transition">🔄</div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 group-hover:text-violet-600">ระบบแลกคาบสอน</h3>
+                <p className="text-sm text-slate-500 mt-0.5">ค้นหาคาบที่แลกได้ 100% โดยไม่ชนตารางสอนของทั้งสองฝ่าย</p>
+              </div>
+              <span className="ml-auto text-violet-300 group-hover:text-violet-500 text-xl">→</span>
+            </Link>
+          </div>
         </div>
 
         <div>
