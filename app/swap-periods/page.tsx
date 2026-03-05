@@ -324,7 +324,7 @@ function HistoryTimetable({ record }: { record: SwapHistory }) {
 function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }: {
   mode: "teacher"|"overview";
   history: SwapHistory[];
-  termInfo: {year:string;semester:string};
+  termInfo: {year:number;semester:string};
   teacherId: string;
   allTeachers: {id:string;full_name:string;department?:string}[];
   onClose: ()=>void;
