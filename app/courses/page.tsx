@@ -22,21 +22,17 @@ function strSimilarity(a: string, b: string): number {
 function fuzzyGroupTeachers(teachers: any[], threshold = 0.8): [string, any[]][] {
   const canonicals: string[] = [];
   const groups: Record<string, any[]> = {};
-  
   for (const t of teachers) {
     const dept = t.department?.trim() || "ไม่ระบุกลุ่มสาระ";
     const found = canonicals.find(c => strSimilarity(c, dept) >= threshold);
     const matchedKey = found || dept;
-
-    if (!found) { 
-      canonicals.push(dept); 
-      groups[dept] = []; 
-    }
-    
+    if (!found) { canonicals.push(dept); groups[dept] = []; }
     groups[matchedKey].push(t);
   }
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b, 'th'));
 }
+
+const MAX_TEACHERS = 3;
 
 export default function CourseStructurePage() {
   const [courses, setCourses] = useState<any[]>([]);
@@ -45,7 +41,7 @@ export default function CourseStructurePage() {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [editingCourse, setEditingCourse] = useState<any>(null); 
+  const [editingCourse, setEditingCourse] = useState<any>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const [filterYear, setFilterYear] = useState("all");
@@ -53,10 +49,11 @@ export default function CourseStructurePage() {
   const [filterRoom, setFilterRoom] = useState("all");
   const [filterTeacher, setFilterTeacher] = useState("all");
 
+  // teacher_ids: array of up to 3 teacher id strings (empty string = empty slot)
   const [formData, setFormData] = useState({
     selectedClassrooms: [] as string[],
     subject_id: "",
-    teacher_id: "",
+    teacher_ids: [""] as string[], // 1–3 items
     periods: "1",
     year: "2567",
     term: "1",
@@ -121,18 +118,40 @@ export default function CourseStructurePage() {
     }));
   };
 
+  // --- Teacher slot helpers ---
+  const setTeacherAt = (idx: number, value: string) => {
+    setFormData(prev => {
+      const ids = [...prev.teacher_ids];
+      ids[idx] = value;
+      return { ...prev, teacher_ids: ids };
+    });
+  };
+
+  const addTeacherSlot = () => {
+    if (formData.teacher_ids.length >= MAX_TEACHERS) return;
+    setFormData(prev => ({ ...prev, teacher_ids: [...prev.teacher_ids, ""] }));
+  };
+
+  const removeTeacherSlot = (idx: number) => {
+    setFormData(prev => ({
+      ...prev,
+      teacher_ids: prev.teacher_ids.filter((_, i) => i !== idx),
+    }));
+  };
+
   const openAddModal = () => {
     setEditingCourse(null);
-    setFormData({ selectedClassrooms: [], subject_id: "", teacher_id: "", periods: "1", year: "2567", term: "1" });
+    setFormData({ selectedClassrooms: [], subject_id: "", teacher_ids: [""], periods: "1", year: "2567", term: "1" });
     setShowModal(true);
   };
 
   const openEditModal = (course: any) => {
     setEditingCourse(course);
+    const existingTeachers = course.course_teachers?.map((ct: any) => String(ct.teacher_id)) || [""];
     setFormData({
       selectedClassrooms: [String(course.classroom_id)],
       subject_id: String(course.subject_id),
-      teacher_id: String(course.course_teachers?.[0]?.teacher_id || ""),
+      teacher_ids: existingTeachers.length > 0 ? existingTeachers : [""],
       periods: String(course.periods_per_week || 1),
       year: String(course.academic_year),
       term: String(course.term),
@@ -143,7 +162,9 @@ export default function CourseStructurePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingCourse && formData.selectedClassrooms.length === 0) return;
-    if (!formData.subject_id || !formData.teacher_id) return;
+    if (!formData.subject_id) return;
+    const validTeacherIds = formData.teacher_ids.filter(id => id !== "");
+    if (validTeacherIds.length === 0) return;
 
     try {
       setLoading(true);
@@ -157,11 +178,14 @@ export default function CourseStructurePage() {
         }).eq("id", editingCourse.id);
         if (updateError) throw updateError;
 
+        // Replace all teachers
         await supabase.from("course_teachers").delete().eq("course_structure_id", editingCourse.id);
-        await supabase.from("course_teachers").insert({
-          course_structure_id: editingCourse.id,
-          teacher_id: parseInt(formData.teacher_id),
-        });
+        await Promise.all(validTeacherIds.map(tid =>
+          supabase.from("course_teachers").insert({
+            course_structure_id: editingCourse.id,
+            teacher_id: parseInt(tid),
+          })
+        ));
       } else {
         await Promise.all(formData.selectedClassrooms.map(async (classroomId) => {
           const { data: courseData, error: courseError } = await supabase.from("course_structures").insert({
@@ -173,11 +197,12 @@ export default function CourseStructurePage() {
           }).select().single();
           if (courseError) throw courseError;
           if (courseData) {
-            const { error: teacherError } = await supabase.from("course_teachers").insert({
-              course_structure_id: courseData.id,
-              teacher_id: parseInt(formData.teacher_id),
-            });
-            if (teacherError) throw teacherError;
+            await Promise.all(validTeacherIds.map(tid =>
+              supabase.from("course_teachers").insert({
+                course_structure_id: courseData.id,
+                teacher_id: parseInt(tid),
+              })
+            ));
           }
         }));
       }
@@ -211,13 +236,7 @@ export default function CourseStructurePage() {
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-3">
-            <Link
-              href="/"
-              className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-2 rounded-lg transition"
-              title="กลับหน้าแรก"
-            >
-              ←
-            </Link>
+            <Link href="/" className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-2 rounded-lg transition" title="กลับหน้าแรก">←</Link>
             <div>
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">โครงสร้างรายวิชา</h1>
               <p className="text-slate-500 text-sm mt-1">จัดการวิชาที่สอนในแต่ละห้องเรียน ครูผู้สอน และจำนวนคาบ</p>
@@ -252,25 +271,21 @@ export default function CourseStructurePage() {
                 <span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full font-bold">{activeFiltersCount}</span>
               )}
             </div>
-
             <select className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 ring-indigo-300"
               value={filterYear} onChange={e => setFilterYear(e.target.value)}>
               <option value="all">ทุกปีการศึกษา</option>
               {filterYears.map(y => <option key={y} value={y}>ปี {y}</option>)}
             </select>
-
             <select className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 ring-indigo-300"
               value={filterTerm} onChange={e => setFilterTerm(e.target.value)}>
               <option value="all">ทุกภาคเรียน</option>
               {filterTerms.map(t => <option key={t} value={t}>เทอม {t}</option>)}
             </select>
-
             <select className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 ring-indigo-300"
               value={filterRoom} onChange={e => setFilterRoom(e.target.value)}>
               <option value="all">ทุกห้องเรียน</option>
               {classrooms.map(c => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
             </select>
-
             <select className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 ring-indigo-300"
               value={filterTeacher} onChange={e => setFilterTeacher(e.target.value)}>
               <option value="all">ทุกครูผู้สอน</option>
@@ -280,14 +295,12 @@ export default function CourseStructurePage() {
                 </optgroup>
               ))}
             </select>
-
             {activeFiltersCount > 0 && (
               <button onClick={() => { setFilterYear("all"); setFilterTerm("all"); setFilterRoom("all"); setFilterTeacher("all"); }}
                 className="text-xs text-red-500 hover:text-red-700 font-medium px-3 py-1.5 rounded-lg hover:bg-red-50 transition border border-red-200">
                 ล้างตัวกรอง
               </button>
             )}
-
             <span className="ml-auto text-xs text-slate-400 font-medium">
               แสดง {filteredCourses.length} / {courses.length} รายการ
             </span>
@@ -331,15 +344,18 @@ export default function CourseStructurePage() {
                             <span className="text-xs text-slate-500">{course.subjects?.name}</span>
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                          {course.course_teachers?.map((ct: any) => (
-                            <div key={ct.id} className="flex items-center gap-2">
-                              <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-xs text-indigo-700 font-bold">
-                                {getTeacherName(ct.teachers).charAt(0)}
+                        <td className="px-6 py-4 text-sm text-slate-600">
+                          <div className="flex flex-col gap-1">
+                            {course.course_teachers?.map((ct: any, idx: number) => (
+                              <div key={ct.id} className="flex items-center gap-2">
+                                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0
+                                  ${idx === 0 ? 'bg-indigo-100 text-indigo-700' : idx === 1 ? 'bg-violet-100 text-violet-700' : 'bg-pink-100 text-pink-700'}`}>
+                                  {idx + 1}
+                                </div>
+                                <span className="whitespace-nowrap">{getTeacherName(ct.teachers)}</span>
                               </div>
-                              {getTeacherName(ct.teachers)}
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </td>
                         <td className="px-6 py-4 text-center text-sm font-medium text-slate-600">
                           {course.periods_per_week}
@@ -347,13 +363,9 @@ export default function CourseStructurePage() {
                         <td className="px-6 py-4 text-right">
                           <div className="flex justify-end gap-1">
                             <button onClick={() => openEditModal(course)}
-                              className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition" title="แก้ไข">
-                              ✏️
-                            </button>
+                              className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition" title="แก้ไข">✏️</button>
                             <button onClick={() => setDeleteConfirmId(String(course.id))}
-                              className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition" title="ลบ">
-                              🗑️
-                            </button>
+                              className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition" title="ลบ">🗑️</button>
                           </div>
                         </td>
                       </tr>
@@ -374,11 +386,12 @@ export default function CourseStructurePage() {
               <h2 className="text-lg font-bold text-slate-800">
                 {editingCourse ? "✏️ แก้ไขรายวิชา" : "➕ เพิ่มรายวิชาใหม่"}
               </h2>
-              <button onClick={() => { setShowModal(false); setEditingCourse(null); }} className="text-slate-400 hover:text-slate-600">✕</button>
+              <button onClick={() => { setShowModal(false); setEditingCourse(null); }} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
             </div>
 
             <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
 
+              {/* ห้องเรียน */}
               {!editingCourse && (
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">
@@ -393,7 +406,8 @@ export default function CourseStructurePage() {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       {classrooms.map(c => (
-                        <label key={c.id} className={`flex items-center space-x-2 p-2 rounded-lg cursor-pointer transition text-sm border ${formData.selectedClassrooms.includes(c.id.toString()) ? "bg-indigo-50 border-indigo-200 text-indigo-900" : "bg-white border-transparent hover:border-slate-200 text-slate-600"}`}>
+                        <label key={c.id} className={`flex items-center space-x-2 p-2 rounded-lg cursor-pointer transition text-sm border
+                          ${formData.selectedClassrooms.includes(c.id.toString()) ? "bg-indigo-50 border-indigo-200 text-indigo-900" : "bg-white border-transparent hover:border-slate-200 text-slate-600"}`}>
                           <input type="checkbox" className="rounded text-indigo-600" checked={formData.selectedClassrooms.includes(c.id.toString())} onChange={() => toggleClassroom(c.id.toString())} />
                           <span>{c.name}</span>
                         </label>
@@ -402,13 +416,13 @@ export default function CourseStructurePage() {
                   </div>
                 </div>
               )}
-
               {editingCourse && (
                 <div className="bg-slate-50 rounded-xl px-4 py-3 text-sm text-slate-600">
                   <span className="font-semibold">ห้องเรียน:</span> {editingCourse.classrooms?.name}
                 </div>
               )}
 
+              {/* วิชา */}
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">วิชา</label>
                 <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
@@ -418,19 +432,69 @@ export default function CourseStructurePage() {
                 </select>
               </div>
 
+              {/* ครูผู้สอน — 1 ถึง 3 คน */}
               <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">ครูผู้สอน</label>
-                <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                  value={formData.teacher_id} onChange={e => setFormData({ ...formData, teacher_id: e.target.value })} required>
-                  <option value="">-- เลือกครู --</option>
-                  {teacherGrouped.map(([dept, list]) => (
-                    <optgroup key={dept} label={`📂 ${dept}`}>
-                      {list.map((t: any) => <option key={t.id} value={t.id}>{getTeacherName(t)}{t.nickname ? ` (${t.nickname})` : ""}</option>)}
-                    </optgroup>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-semibold text-slate-700">
+                    ครูผู้สอน
+                    <span className="ml-2 text-xs font-normal text-slate-400">({formData.teacher_ids.length}/{MAX_TEACHERS} คน)</span>
+                  </label>
+                  {formData.teacher_ids.length < MAX_TEACHERS && (
+                    <button type="button" onClick={addTeacherSlot}
+                      className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-indigo-50 transition">
+                      + เพิ่มครู
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  {formData.teacher_ids.map((tid, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      {/* Badge ลำดับ */}
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0
+                        ${idx === 0 ? 'bg-indigo-100 text-indigo-700' : idx === 1 ? 'bg-violet-100 text-violet-700' : 'bg-pink-100 text-pink-700'}`}>
+                        {idx + 1}
+                      </div>
+
+                      <select
+                        className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                        value={tid}
+                        onChange={e => setTeacherAt(idx, e.target.value)}
+                        required={idx === 0}>
+                        <option value="">-- เลือกครู{idx === 0 ? '' : ' (ไม่บังคับ)'} --</option>
+                        {teacherGrouped.map(([dept, list]) => (
+                          <optgroup key={dept} label={`📂 ${dept}`}>
+                            {list
+                              .filter((t: any) => !formData.teacher_ids.some((selectedId, i) => i !== idx && selectedId === String(t.id)))
+                              .map((t: any) => (
+                                <option key={t.id} value={String(t.id)}>{getTeacherName(t)}</option>
+                              ))}
+                          </optgroup>
+                        ))}
+                      </select>
+
+                      {/* ปุ่มลบ (ไม่ให้ลบช่องแรก) */}
+                      {idx > 0 && (
+                        <button type="button" onClick={() => removeTeacherSlot(idx)}
+                          className="w-7 h-7 rounded-full bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 flex items-center justify-center flex-shrink-0 transition text-sm">
+                          ✕
+                        </button>
+                      )}
+                    </div>
                   ))}
-                </select>
+                </div>
+
+                {/* Helper text */}
+                <p className="text-xs text-slate-400 mt-2">
+                  {formData.teacher_ids.length === 1
+                    ? "กดปุ่ม + เพิ่มครู เพื่อเพิ่มครูผู้สอนร่วมได้อีก 2 คน"
+                    : formData.teacher_ids.length < MAX_TEACHERS
+                    ? `เพิ่มครูได้อีก ${MAX_TEACHERS - formData.teacher_ids.length} คน`
+                    : "ครบ 3 คนแล้ว (สูงสุด)"}
+                </p>
               </div>
 
+              {/* เทอม / ปี / คาบ */}
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1">เทอม</label>
