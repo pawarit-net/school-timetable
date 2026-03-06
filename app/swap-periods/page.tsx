@@ -607,6 +607,7 @@ function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }
 // ═══════════════════════════════════════════════════════════════
 export default function SwapPeriods() {
   const [session,      setSession]      = useState<any>(null);
+  const [mounted,      setMounted]      = useState(false);
   const [termInfo,     setTermInfo]     = useState<{year:number,semester:string}>({year:2569,semester:"1"});
   const [allTeachers,  setAllTeachers]  = useState<{id:string,full_name:string,department?:string}[]>([]);
 
@@ -659,8 +660,9 @@ export default function SwapPeriods() {
   // โหลด termInfo ก่อน (await) แล้วค่อย loadAllData ด้วยค่าจริงจาก DB ทันที
   // วิธีนี้ป้องกัน race condition ที่ useEffect([termInfo]) จะ fire ด้วยค่า default ก่อน
   useEffect(()=>{
-    const saved = typeof window!=="undefined" ? localStorage.getItem("teacher_session") : null;
-    if (saved) setSession(JSON.parse(saved));
+    setMounted(true);
+    const saved = localStorage.getItem("teacher_session");
+    if (saved) { try { setSession(JSON.parse(saved)); } catch(e) {} }
     supabase.from("teachers").select("id,full_name,department").order("department").order("full_name")
       .then(({data})=>{ if(data) setAllTeachers(data); });
     loadInitialData();
@@ -885,6 +887,13 @@ export default function SwapPeriods() {
       .order("created_at",{ascending:false}).limit(50);
     if (data) setSwapHistory(data as SwapHistory[]);
   }
+
+  // รอ client mount ก่อน — ป้องกัน SSR แสดง lock screen ผิดพลาดบน Vercel
+  if (!mounted) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"/>
+    </div>
+  );
 
   if (!session) return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50">
