@@ -113,6 +113,7 @@ export default function TeacherSchedule() {
   const [toast,        setToast]        = useState<{msg:string,type:'success'|'error'}|null>(null);
   const [fontIdx,      setFontIdx]      = useState(0);
   const [showBreaks,   setShowBreaks]   = useState(true);
+  const [showPrintModal, setShowPrintModal] = useState(false);
 
   // ── overview-tab state ──
   const [deptFilter,      setDeptFilter]      = useState("all");
@@ -428,6 +429,12 @@ export default function TeacherSchedule() {
                       style={{fontSize:`${0.7+i*0.1}rem`}}>{f.label}</button>
                   ))}
                 </div>
+                {selectedTeacher && (
+                  <button onClick={()=>setShowPrintModal(true)}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 shadow-sm flex items-center gap-2">
+                    🖨️ พิมพ์ตาราง
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -806,6 +813,188 @@ export default function TeacherSchedule() {
           </>
         )}
       </div>
+
+      {/* ════ PRINT MODAL ════ */}
+      {showPrintModal && selectedTeacher && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl my-4" id="print-schedule-area">
+            {/* header bar — ซ่อนตอนพิมพ์ */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 no-print">
+              <h2 className="font-extrabold text-slate-800">🖨️ ตารางสอน — {teachers.find(t=>String(t.id)===String(selectedTeacher))?.full_name}</h2>
+              <div className="flex gap-2">
+                <button onClick={()=>window.print()} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700">
+                  🖨️ พิมพ์ / บันทึก PDF
+                </button>
+                <button onClick={()=>setShowPrintModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-200">✕ ปิด</button>
+              </div>
+            </div>
+
+            {/* เนื้อหาที่จะพิมพ์ */}
+            <div className="p-8 print-content" style={{fontFamily:"'Sarabun', sans-serif"}}>
+
+              {/* ── หัวกระดาษ ── */}
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",borderBottom:"3px solid #6366f1",paddingBottom:"16px",marginBottom:"20px"}}>
+                <div>
+                  <div style={{fontSize:"22px",fontWeight:900,color:"#1e293b",letterSpacing:"-0.5px"}}>ตารางสอนประจำภาคเรียน</div>
+                  <div style={{fontSize:"18px",fontWeight:800,color:"#4f46e5",marginTop:"6px"}}>
+                    {teachers.find(t=>String(t.id)===String(selectedTeacher))?.full_name}
+                  </div>
+                  <div style={{fontSize:"12px",color:"#64748b",marginTop:"3px",display:"flex",gap:"8px",alignItems:"center"}}>
+                    <span style={{background:"#ede9fe",color:"#7c3aed",borderRadius:"6px",padding:"2px 10px",fontWeight:600,fontSize:"11px"}}>
+                      กลุ่มสาระ{teachers.find(t=>String(t.id)===String(selectedTeacher))?.department||"ไม่ระบุ"}
+                    </span>
+                  </div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:"13px",color:"#475569",fontWeight:600}}>ปีการศึกษา {academicYear}</div>
+                  <div style={{fontSize:"13px",color:"#475569"}}>ภาคเรียนที่ {semester}</div>
+                  <div style={{display:"flex",gap:"8px",marginTop:"8px",justifyContent:"flex-end"}}>
+                    <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"8px",padding:"4px 12px",textAlign:"center"}}>
+                      <div style={{fontSize:"18px",fontWeight:800,color:"#1d4ed8"}}>{mySchedule.filter(a=>!a.activity_type).length}</div>
+                      <div style={{fontSize:"9px",color:"#60a5fa"}}>คาบสอน</div>
+                    </div>
+                    <div style={{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:"8px",padding:"4px 12px",textAlign:"center"}}>
+                      <div style={{fontSize:"18px",fontWeight:800,color:"#c2410c"}}>{mySchedule.filter(a=>a.activity_type==='meeting').length}</div>
+                      <div style={{fontSize:"9px",color:"#fb923c"}}>ประชุม</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── ตาราง ── */}
+              <table style={{borderCollapse:"collapse",width:"100%",fontSize:"11px",tableLayout:"fixed"}}>
+                <colgroup>
+                  <col style={{width:"64px"}}/>
+                  {[1,2,3,4,5,6,7].map(s=><col key={s}/>)}
+                </colgroup>
+                <thead>
+                  {/* แถวชื่อครู spanning ทุก column */}
+                  <tr>
+                    <th colSpan={8} style={{background:"#4f46e5",color:"white",border:"1px solid #4338ca",padding:"8px 12px",textAlign:"left"}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
+                          <span style={{fontSize:"15px",fontWeight:800,letterSpacing:"0.2px"}}>
+                            👤 {teachers.find(t=>String(t.id)===String(selectedTeacher))?.full_name}
+                          </span>
+                          <span style={{background:"#818cf8",borderRadius:"6px",padding:"2px 10px",fontSize:"11px",fontWeight:600,color:"white",opacity:0.9}}>
+                            {teachers.find(t=>String(t.id)===String(selectedTeacher))?.department||"ไม่ระบุกลุ่มสาระ"}
+                          </span>
+                        </div>
+                        <span style={{fontSize:"11px",opacity:0.8,fontWeight:500}}>
+                          ปีการศึกษา {academicYear} ภาคเรียนที่ {semester}
+                        </span>
+                      </div>
+                    </th>
+                  </tr>
+                  <tr>
+                    <th style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"8px 4px",textAlign:"center",fontWeight:700,fontSize:"12px",borderRadius:"0"}}>วัน</th>
+                    {[1,2,3,4,5,6,7].map(s=>(
+                      <th key={s} style={{background:"#1e293b",color:"white",border:"1px solid #334155",padding:"6px 4px",textAlign:"center",fontWeight:700}}>
+                        <div style={{fontSize:"12px"}}>คาบ {s}</div>
+                        <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:400,marginTop:"2px"}}>
+                          {({1:"08:30",2:"09:20",3:"10:25",4:"11:15",5:"13:00",6:"14:00",7:"14:50"} as Record<number,string>)[s]}
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {DAYS.map((day,di)=>{
+                    const dayColors = [
+                      {bg:"#eff6ff",border:"#93c5fd",text:"#1d4ed8",header:"#dbeafe",headerText:"#1e40af"},
+                      {bg:"#fff1f2",border:"#fca5a5",text:"#be123c",header:"#fecdd3",headerText:"#9f1239"},
+                      {bg:"#f0fdf4",border:"#86efac",text:"#15803d",header:"#bbf7d0",headerText:"#14532d"},
+                      {bg:"#fffbeb",border:"#fcd34d",text:"#b45309",header:"#fde68a",headerText:"#92400e"},
+                      {bg:"#f5f3ff",border:"#c4b5fd",text:"#7c3aed",header:"#ddd6fe",headerText:"#4c1d95"},
+                    ];
+                    const dc = dayColors[di];
+                    return (
+                      <tr key={day}>
+                        <td style={{border:`2px solid ${dc.border}`,padding:"6px 4px",textAlign:"center",fontWeight:800,fontSize:"12px",background:dc.header,color:dc.headerText,letterSpacing:"0.5px",whiteSpace:"nowrap"}}>
+                          {day}
+                        </td>
+                        {[1,2,3,4,5,6,7].map(slotId=>{
+                          const match = mySchedule.find(a=>a.day_of_week===day&&a.slot_id===slotId);
+                          if (!match) return (
+                            <td key={slotId} style={{border:"1px solid #e2e8f0",height:"80px",background:"white"}}/>
+                          );
+                          if (match.activity_type==='meeting') return (
+                            <td key={slotId} style={{border:`1px solid #fed7aa`,height:"80px",background:"#fff7ed",verticalAlign:"middle",textAlign:"center",padding:"4px"}}>
+                              <div style={{fontSize:"16px",marginBottom:"2px"}}>📅</div>
+                              <div style={{fontWeight:700,color:"#c2410c",fontSize:"10px",lineHeight:1.3}}>{match.note||"ประชุม"}</div>
+                            </td>
+                          );
+                          return (
+                            <td key={slotId} style={{border:`1px solid ${dc.border}`,height:"80px",background:dc.bg,verticalAlign:"middle",padding:"4px"}}>
+                              <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:"3px"}}>
+                                <div style={{background:"white",border:`1px solid ${dc.border}`,borderRadius:"6px",padding:"2px 8px",color:dc.text,fontWeight:700,fontSize:"10px",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  {match.classrooms?.name||"-"}
+                                </div>
+                                <div style={{fontWeight:800,color:dc.text,fontSize:"11px",textAlign:"center"}}>{match.subjects?.code}</div>
+                                <div style={{color:"#475569",fontSize:"9px",textAlign:"center",lineHeight:1.3,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical" as any,overflow:"hidden",maxWidth:"100%"}}>
+                                  {match.subjects?.name}
+                                </div>
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* ── legend ── */}
+              <div style={{display:"flex",gap:"16px",marginTop:"10px",fontSize:"9px",color:"#94a3b8"}}>
+                <span>🔵 = จันทร์ &nbsp; 🔴 = อังคาร &nbsp; 🟢 = พุธ &nbsp; 🟡 = พฤหัสบดี &nbsp; 🟣 = ศุกร์ &nbsp; 📅 = ประชุม/ล็อก</span>
+              </div>
+
+              {/* ── ลายเซ็น ── */}
+              <div style={{marginTop:"40px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"32px"}}>
+                {([
+                  ["ครูผู้สอน", teachers.find(t=>String(t.id)===String(selectedTeacher))?.full_name||""],
+                  ["หัวหน้ากลุ่มสาระ", ""],
+                  ["ผู้อำนวยการโรงเรียน", ""],
+                ] as [string,string][]).map(([role,name])=>(
+                  <div key={role} style={{textAlign:"center"}}>
+                    <div style={{marginTop:"44px",borderTop:"1.5px solid #475569",paddingTop:"8px"}}>
+                      <div style={{fontWeight:700,color:"#1e293b",fontSize:"12px"}}>{name||"................................"}</div>
+                      <div style={{fontSize:"11px",color:"#64748b",marginTop:"3px"}}>{role}</div>
+                      <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>วันที่ ........../........../..........
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <style>{`
+            @media print {
+              body * { visibility: hidden !important; }
+              #print-schedule-area, #print-schedule-area * { visibility: visible !important; }
+              #print-schedule-area {
+                position: fixed !important;
+                top: 0 !important; left: 0 !important;
+                width: 100% !important; height: auto !important;
+                background: white !important;
+                z-index: 9999 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                margin: 0 !important;
+                max-width: 100% !important;
+              }
+              .no-print { display: none !important; }
+              @page {
+                margin: 0 !important;
+                size: A4 landscape;
+              }
+              /* ซ่อน header/footer ของ browser */
+              html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            }
+          `}</style>
+        </div>
+      )}
 
       {/* ════ MEETING MODAL (individual tab) ════ */}
       {isModalOpen&&(

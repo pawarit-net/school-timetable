@@ -334,8 +334,8 @@ function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto print:p-0 print:bg-white">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-4 print:shadow-none print:rounded-none print:my-0 print:max-w-full">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 print:hidden">
+      <div className="print-area bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-4">
+        <div className="no-print flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <h2 className="font-extrabold text-slate-800">
             {mode==="teacher" ? `🖨️ ใบสรุปการแลกคาบ — ${teacherName}` : "🖨️ รายงานภาพรวมการแลกคาบ"}
           </h2>
@@ -397,12 +397,99 @@ function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }
                       </tbody>
                     </table>
                   </div>
-                  <div style={{marginTop:"40px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"40px"}}>
-                    {[["ครู A (ผู้แลกออก)",teacherName],["หัวหน้ากลุ่มสาระ",""]].map(([role,name])=>(
+                  {/* ─── ตารางสรุปรายสัปดาห์ ─── */}
+                  <div style={{marginTop:"24px",marginBottom:"24px"}}>
+                    <div style={{fontSize:"13px",fontWeight:700,color:"#475569",marginBottom:"8px"}}>📅 ตารางสรุปการแลกคาบ</div>
+                    <table style={{borderCollapse:"collapse",width:"100%",fontSize:"10px"}}>
+                      <thead>
+                        <tr style={{background:"#f8fafc"}}>
+                          <th style={{border:"1px solid #e2e8f0",padding:"4px 6px",color:"#94a3b8",width:"60px",textAlign:"center"}}>วัน</th>
+                          {[1,2,3,4,5,6,7].map(s=>(
+                            <th key={s} style={{border:"1px solid #e2e8f0",padding:"4px 2px",color:"#64748b",textAlign:"center",fontWeight:600}}>
+                              <div>คาบ {s}</div>
+                              <div style={{fontSize:"8px",color:"#94a3b8",fontWeight:400}}>
+                                {({1:"08:30",2:"09:20",3:"10:25",4:"11:15",5:"13:00",6:"14:00",7:"14:50"} as Record<number,string>)[s]}
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"].map(day=>(
+                          <tr key={day}>
+                            <td style={{border:"1px solid #e2e8f0",padding:"4px 6px",background:"#f8fafc",fontWeight:700,color:"#475569",textAlign:"center",fontSize:"10px"}}>{day}</td>
+                            {[1,2,3,4,5,6,7].map(slot=>{
+                              // หา swap record ที่เกี่ยวข้องกับวัน+คาบนี้
+                              const swapOut = teacherRecords.find(h=>
+                                h.requester_id===teacherId &&
+                                h.from_day===day && h.from_slot_id===slot
+                              );
+                              const swapIn = teacherRecords.find(h=>
+                                h.to_teacher_id===teacherId &&
+                                h.from_day===day && h.from_slot_id===slot
+                              );
+                              const goTeach = teacherRecords.find(h=>
+                                h.requester_id===teacherId &&
+                                h.to_day===day && h.to_slot_id===slot
+                              );
+                              const comeTeach = teacherRecords.find(h=>
+                                h.to_teacher_id===teacherId &&
+                                h.to_day===day && h.to_slot_id===slot
+                              );
+                              if (swapOut) return (
+                                <td key={slot} style={{border:"1px solid #e2e8f0",padding:"2px",height:"56px",verticalAlign:"top"}}>
+                                  <div style={{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:"4px",padding:"2px 4px",height:"100%"}}>
+                                    <div style={{fontSize:"8px",color:"#2563eb",fontWeight:700}}>แลกออก →</div>
+                                    <div style={{fontSize:"9px",color:"#1e40af",fontWeight:700,lineHeight:1.2}}>{swapOut.from_subject_name}</div>
+                                    <div style={{fontSize:"8px",color:"#3b82f6"}}>{swapOut.from_classroom_name}</div>
+                                    <div style={{fontSize:"7px",color:"#60a5fa",marginTop:"1px"}}>B: {swapOut.to_teacher_name}</div>
+                                  </div>
+                                </td>
+                              );
+                              if (goTeach) return (
+                                <td key={slot} style={{border:"1px solid #e2e8f0",padding:"2px",height:"56px",verticalAlign:"top"}}>
+                                  <div style={{background:"#dcfce7",border:"1px solid #86efac",borderRadius:"4px",padding:"2px 4px",height:"100%"}}>
+                                    <div style={{fontSize:"8px",color:"#16a34a",fontWeight:700}}>← ไปสอนแทน</div>
+                                    <div style={{fontSize:"9px",color:"#14532d",fontWeight:700,lineHeight:1.2}}>{goTeach.to_subject_name}</div>
+                                    <div style={{fontSize:"8px",color:"#22c55e"}}>{goTeach.to_classroom_name}</div>
+                                  </div>
+                                </td>
+                              );
+                              return (
+                                <td key={slot} style={{border:"1px solid #e2e8f0",padding:"2px",height:"56px",background:"white"}}/>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{display:"flex",gap:"16px",marginTop:"6px",fontSize:"9px"}}>
+                      <span style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                        <span style={{width:"12px",height:"12px",background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:"2px",display:"inline-block"}}/>
+                        <span style={{color:"#2563eb",fontWeight:600}}>แลกออก (B มาสอนแทน)</span>
+                      </span>
+                      <span style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                        <span style={{width:"12px",height:"12px",background:"#dcfce7",border:"1px solid #86efac",borderRadius:"2px",display:"inline-block"}}/>
+                        <span style={{color:"#16a34a",fontWeight:600}}>ไปสอนแทน B</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{marginTop:"40px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"24px"}}>
+                    {([
+                      ["ครู A (ผู้แลกออก)", teacherName],
+                      ["ครู B (ผู้รับสอนแทน)", ""],
+                      ["ผู้อนุมัติ / หัวหน้ากลุ่มสาระ", ""],
+                    ] as [string,string][]).map(([role,name])=>(
                       <div key={role} style={{textAlign:"center"}}>
-                        <div style={{borderTop:"1px solid #475569",paddingTop:"8px",marginTop:"40px"}}>
-                          <div style={{fontWeight:700,color:"#1e293b"}}>{name||"................................"}</div>
-                          <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{role}</div>
+                        <div style={{borderTop:"1px solid #475569",paddingTop:"8px",marginTop:"48px"}}>
+                          <div style={{fontWeight:700,color:"#1e293b",fontSize:"12px"}}>
+                            {name || "................................"}
+                          </div>
+                          <div style={{fontSize:"11px",color:"#64748b",marginTop:"4px"}}>{role}</div>
+                          <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>
+                            วันที่ ........../........../..........
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -427,43 +514,87 @@ function PrintModal({ mode, history, termInfo, teacherId, allTeachers, onClose }
               <table style={{borderCollapse:"collapse",width:"100%",fontSize:"11px"}}>
                 <thead>
                   <tr style={{background:"#f8fafc"}}>
-                    {["#","วันที่","ผู้จัดการ","คาบที่แลกออก","คาบที่แลกเข้า","ครู B"].map(h=>(
-                      <th key={h} style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"left",color:"#64748b",fontWeight:700}}>{h}</th>
+                    {["#","วันที่","ครู A (ผู้แลก)","ครู A ต้องสอนแทน B","ครู B (รับแทน)","ครู B ต้องสอนแทน A"].map(h=>(
+                      <th key={h} style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"left",color:"#64748b",fontWeight:700,fontSize:"12px"}}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {history.map((h,i)=>(
                     <tr key={h.id} style={{background:i%2===0?"white":"#f8fafc"}}>
-                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"center",color:"#94a3b8"}}>{i+1}</td>
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",textAlign:"center",color:"#94a3b8",fontSize:"10px"}}>{i+1}</td>
                       <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#64748b",fontSize:"10px",whiteSpace:"nowrap"}}>
                         {new Date(h.created_at).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"numeric"})}
                       </td>
-                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",fontWeight:700,color:"#1e293b"}}>{h.requester_name}</td>
+                      {/* ครู A */}
                       <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
-                        <div style={{fontWeight:700,color:"#1d4ed8"}}>{h.from_day} คาบ {h.from_slot_id}</div>
-                        <div style={{color:"#64748b",fontSize:"10px"}}>{h.from_subject_name}</div>
-                        <div style={{color:"#94a3b8",fontSize:"9px"}}>{h.from_classroom_name}</div>
+                        <div style={{fontWeight:700,color:"#1e293b",fontSize:"13px"}}>
+                          {h.requester_name && h.requester_name.trim()
+                            ? h.requester_name
+                            : allTeachers.find(t=>t.id===h.requester_id)?.full_name || "-"}
+                        </div>
+                        <div style={{color:"#94a3b8",fontSize:"11px",marginTop:"2px"}}>แลกออก: {h.from_day} คาบ {h.from_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"11px"}}>{h.from_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"11px"}}>{h.from_classroom_name}</div>
                       </td>
+                      {/* A ต้องไปสอนแทน B (คาบของ B) */}
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",background:"#eff6ff"}}>
+                        <div style={{fontSize:"11px",color:"#3b82f6",fontWeight:700,marginBottom:"2px"}}>ไปสอนที่ห้อง B แทน</div>
+                        <div style={{fontWeight:700,color:"#1d4ed8",fontSize:"13px"}}>{h.to_day} คาบ {h.to_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"11px"}}>{h.to_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"11px"}}>{h.to_classroom_name}</div>
+                      </td>
+                      {/* ครู B */}
                       <td style={{border:"1px solid #e2e8f0",padding:"6px 8px"}}>
-                        <div style={{fontWeight:700,color:"#059669"}}>{h.to_day} คาบ {h.to_slot_id}</div>
-                        <div style={{color:"#64748b",fontSize:"10px"}}>{h.to_subject_name}</div>
-                        <div style={{color:"#94a3b8",fontSize:"9px"}}>{h.to_classroom_name}</div>
+                        <div style={{fontWeight:700,color:"#1e293b",fontSize:"13px"}}>{h.to_teacher_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"11px",marginTop:"2px"}}>แลกออก: {h.to_day} คาบ {h.to_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"11px"}}>{h.to_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"11px"}}>{h.to_classroom_name}</div>
                       </td>
-                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",color:"#475569"}}>{h.to_teacher_name}</td>
+                      {/* B ต้องไปสอนแทน A (คาบของ A) */}
+                      <td style={{border:"1px solid #e2e8f0",padding:"6px 8px",background:"#f0fdf4"}}>
+                        <div style={{fontSize:"11px",color:"#16a34a",fontWeight:700,marginBottom:"2px"}}>มาสอนที่ห้อง A แทน</div>
+                        <div style={{fontWeight:700,color:"#059669",fontSize:"13px"}}>{h.from_day} คาบ {h.from_slot_id}</div>
+                        <div style={{color:"#64748b",fontSize:"11px"}}>{h.from_subject_name}</div>
+                        <div style={{color:"#94a3b8",fontSize:"11px"}}>{h.from_classroom_name}</div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            {/* ลายเซ็นภาพรวม */}
+            <div style={{marginTop:"48px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"32px"}}>
+              {[
+                ["ครู A (ผู้แลกออก)",""],
+                ["ครู B (ผู้รับสอนแทน)",""],
+                ["ผู้อนุมัติ / หัวหน้ากลุ่มสาระ",""],
+              ].map(([role])=>(
+                <div key={role} style={{textAlign:"center"}}>
+                  <div style={{borderTop:"1px solid #475569",paddingTop:"8px",marginTop:"48px"}}>
+                    <div style={{fontWeight:700,color:"#1e293b",fontSize:"12px"}}>................................</div>
+                    <div style={{fontSize:"11px",color:"#64748b",marginTop:"4px"}}>{role}</div>
+                    <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>วันที่ ........../........../..........
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
+          </div>
           )}
         </div>
       </div>
       <style>{`
         @media print {
-          body > * { display: none !important; }
-          .fixed.inset-0 { display: block !important; position: static !important; background: white !important; }
-          .fixed.inset-0 > div { box-shadow: none !important; border-radius: 0 !important; max-width: 100% !important; margin: 0 !important; }
+          body * { visibility: hidden !important; }
+          .print-area, .print-area * { visibility: visible !important; }
+          .print-area {
+            position: fixed !important;
+            top: 0 !important; left: 0 !important;
+            width: 100% !important;
+            background: white !important;
+            z-index: 9999 !important;
+          }
+          .no-print { display: none !important; }
           @page { margin: 1.5cm; size: A4; }
         }
       `}</style>
@@ -537,12 +668,14 @@ export default function SwapPeriods() {
 
   async function loadInitialData() {
     const { data: settings } = await supabase
-      .from("academic_settings").select("*").eq("id",1).single();
+      .from("academic_settings").select("*").single();
+    console.log("[SwapPeriods] academic_settings →", settings);
     const yr  = Number(settings?.year  ?? 2569);
     const raw = String(settings?.semester ?? "1");
+    // DB อาจเก็บ semester เป็น "3" หรือ "Summer" — รองรับทั้งสองแบบ
     const sm  = raw === "3" ? "Summer" : raw;
+    console.log("[SwapPeriods] termInfo resolved →", { yr, raw, sm });
     setTermInfo({ year: yr, semester: sm });
-    // ส่งค่าตรงๆ ไม่รอ React re-render
     await loadAllData(yr, sm);
   }
 
@@ -572,25 +705,40 @@ export default function SwapPeriods() {
   }
 
   // ─── Step 1: เลือกครู ─────────────────────────────────────
+  // Query ตรงจาก DB เสมอ ไม่พึ่ง state ที่อาจ stale
   async function handleSelectTeacherA(id:string) {
     setTeacherAId(id);
     setSelectedPeriod(null); setOptions([]); setChosenOption(null); setStep(1);
     if (!id) { setTeacherAPeriods([]); return; }
 
-    // ใช้ allAssignments จาก state (โหลดแล้วตอน init)
-    // แต่ถ้ายังว่าง (race condition) ให้ query ตรงเพื่อความแน่ใจ
-    let assignments = allAssignments;
-    if (assignments.length === 0) {
-      assignments = await loadAllData();
+    // ดึงตรงจาก DB ด้วย termInfo ปัจจุบัน — ไม่รอ state settle
+    const { data: settings } = await supabase
+      .from("academic_settings").select("*").single();
+    const yr  = Number(settings?.year  ?? termInfo.year);
+    const raw = String(settings?.semester ?? termInfo.semester);
+    const sm  = raw === "3" ? "Summer" : raw;
+    const semVariants = sm === "Summer" ? ["Summer","3"] : [sm];
+
+    console.log("[SwapPeriods] handleSelectTeacherA query →", { id, yr, sm, semVariants });
+
+    const { data: assigns } = await supabase
+      .from("teaching_assignments")
+      .select("*,subjects(code,name),classrooms(name),teachers(full_name)")
+      .eq("teacher_id", id)
+      .eq("academic_year", yr)
+      .in("semester", semVariants);
+
+    const periods = (assigns ?? []) as Assignment[];
+    console.log("[SwapPeriods] periods found →", periods.length,
+      "semesters:", [...new Set(periods.map(p=>p.semester))]);
+
+    // อัพเดต allAssignments ด้วยถ้า state ยัง empty
+    if (allAssignments.length === 0) {
+      await loadAllData(yr, sm);
     }
 
-    const originalPeriods = assignments.filter(a => a.teacher_id === id);
-    console.log("[SwapPeriods] handleSelectTeacherA →", { id, totalAssignments: assignments.length, periodsFound: originalPeriods.length });
-    // ตัวอย่างค่า semester ที่มีใน allAssignments
-    const semValues = [...new Set(assignments.map(a=>a.semester))];
-    console.log("[SwapPeriods] semesters in allAssignments:", semValues);
-    setTeacherAPeriods(originalPeriods);
-    if (originalPeriods.length > 0) setStep(2);
+    setTeacherAPeriods(periods);
+    if (periods.length > 0) setStep(2);
   }
 
 
@@ -623,8 +771,11 @@ export default function SwapPeriods() {
       const bEffectiveBusy = resolveTeacherEffectiveSlots(bId, allAssignments, swapHistory);
 
       // คาบของ B ที่อยู่ในห้องเดียวกัน (candidates ที่จะแลกด้วย)
+      // กรองออก: คาบที่เป็นวันเดียวกันกับคาบที่จะแลก (ห้ามแลกในวันเดียวกัน)
       const bCandidates = sameRoomAssigns.filter(a =>
-        a.teacher_id === bId && !a.is_locked
+        a.teacher_id === bId &&
+        !a.is_locked &&
+        a.day_of_week !== period.day_of_week
       );
 
       const teacherBInfo = allTeachers.find(t=>t.id===bId) ||
@@ -673,9 +824,10 @@ export default function SwapPeriods() {
     if (!selectedPeriod||!chosenOption||!session) return;
     setIsLoading(true);
     try {
+      // requester = ครู A ที่เลือกในขั้นตอนที่ 1 เสมอ (teacherAName คำนวณจาก allTeachers+teacherAId)
       const { error } = await supabase.from("swap_history").insert([{
-        requester_id:    session.id,
-        requester_name:  session.full_name,
+        requester_id:    teacherAId,
+        requester_name:  teacherAName,
         from_day:        selectedPeriod.day_of_week,
         from_slot_id:    selectedPeriod.slot_id,
         from_classroom_id:   selectedPeriod.classroom_id,
