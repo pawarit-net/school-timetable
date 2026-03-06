@@ -63,17 +63,17 @@ function getLevelPrefixFromTargetLevel(level: string): string | null {
   return map[level] ?? null;
 }
 function naturalSort(a: string, b: string): number {
-  const re = /([\D]*)(\d+)/g;
-  let am: RegExpExecArray | null, bm: RegExpExecArray | null;
-  re.lastIndex = 0;
-  while (true) {
-    am = re.exec(a); bm = re.exec(b);
-    if (!am && !bm) return a.localeCompare(b, 'th');
-    if (!am) return 1;
-    if (!bm) return -1;
-    const cmp = am[1].localeCompare(bm[1], 'th') || (parseInt(am[2]) - parseInt(bm[2]));
-    if (cmp !== 0) return cmp;
-  }
+  const parse = (s: string) => {
+    const m = s.trim().match(/^(\d+)\/(\d+)(.*)/);
+    if (m) return { grade: parseInt(m[1]), room: parseInt(m[2]), suffix: m[3].trim() };
+    const m2 = s.trim().match(/^(\d+)(.*)/);
+    if (m2) return { grade: parseInt(m2[1]), room: 0, suffix: m2[2].trim() };
+    return { grade: 0, room: 0, suffix: s };
+  };
+  const pa = parse(a), pb = parse(b);
+  if (pa.grade !== pb.grade) return pa.grade - pb.grade;
+  if (pa.room !== pb.room) return pa.room - pb.room;
+  return pa.suffix.localeCompare(pb.suffix, 'th');
 }
 
 interface TimeSlot { id: number | string; label: string; time: string; isBreak?: boolean; }
@@ -169,6 +169,23 @@ export default function ManageAssignments() {
 
   useEffect(() => { loadInitialData(); }, []);
   useEffect(() => { if (selectedRoom) fetchSchedule(); }, [selectedRoom, termInfo]);
+
+  // ── Realtime: subscribe เฉพาะห้องที่เลือกอยู่ ──
+  useEffect(() => {
+    if (!selectedRoom) return;
+    const channel = supabase
+      .channel(`timetable-room-${selectedRoom}-${termInfo.year}-${termInfo.semester}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'teaching_assignments',
+        filter: `classroom_id=eq.${selectedRoom}`
+      }, () => {
+        fetchSchedule();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [selectedRoom, termInfo]);
 
   async function loadInitialData() {
     setIsLoading(true);
@@ -353,37 +370,84 @@ export default function ManageAssignments() {
     const mode = confirm(`ต้องการ "ล้างตารางเดิมทั้งหมด" ก่อนจัดใหม่หรือไม่?\n\n[OK] = ล้างแล้วจัดใหม่\n[Cancel] = เติมเฉพาะช่องว่าง`) ? 'reset' : 'fill';
     setIsLoading(true);
     try {
+      // ── 1. โหลดโครงสร้างรายวิชาของห้องนี้ ──
       const { data: structures, error: structError } = await supabase
         .from("course_structures").select(`*, course_teachers(teacher_id)`)
         .eq("classroom_id", selectedRoom).eq("academic_year", termInfo.year).eq("term", termInfo.semester);
       if (structError || !structures || structures.length === 0) {
         alert("⚠️ ไม่พบข้อมูลโครงสร้างรายวิชาของห้องนี้"); return;
       }
+
+      // ── 2. คำนวณ max คาบ/วัน ของแต่ละครู จาก course_structures ทั้งโรงเรียน ──
+      const { data: allStructures } = await supabase
+        .from("course_structures")
+        .select(`periods_per_week, course_teachers(teacher_id)`)
+        .eq("academic_year", termInfo.year)
+        .eq("term", termInfo.semester);
+
+      const teacherWeeklyLoad: Record<string, number> = {};
+      for (const s of (allStructures || [])) {
+        for (const ct of (s.course_teachers || [])) {
+          const tid = String(ct.teacher_id);
+          teacherWeeklyLoad[tid] = (teacherWeeklyLoad[tid] || 0) + (s.periods_per_week || 1);
+        }
+      }
+      // max คาบ/วัน = ceil(total/5) แต่ไม่เกิน 5
+      const teacherMaxPerDay: Record<string, number> = {};
+      for (const [tid, total] of Object.entries(teacherWeeklyLoad)) {
+        teacherMaxPerDay[tid] = Math.min(5, Math.ceil(total / 5));
+      }
+
+      // ── 3. ล้างตาราง (ถ้าเลือก reset) ──
       if (mode === 'reset') {
         await supabase.from("teaching_assignments").delete()
           .eq("classroom_id", selectedRoom).eq("academic_year", termInfo.year)
           .eq("semester", termInfo.semester).eq("is_locked", false);
       }
+
+      // ── 4. โหลด existing assignments (รวม activity_type เพื่อจับคาบประชุม) ──
       const { data: existing } = await supabase.from("teaching_assignments")
-        .select("day_of_week, slot_id, teacher_id, subject_id")
+        .select("day_of_week, slot_id, teacher_id, subject_id, activity_type")
         .eq("classroom_id", selectedRoom).eq("academic_year", termInfo.year).eq("semester", termInfo.semester);
+
       const { data: allRoomsExisting } = await supabase.from("teaching_assignments")
-        .select("day_of_week, slot_id, teacher_id, classroom_id")
+        .select("day_of_week, slot_id, teacher_id, classroom_id, activity_type")
         .neq("classroom_id", selectedRoom).eq("academic_year", termInfo.year).eq("semester", termInfo.semester);
 
+      // ── 5. สร้าง lookup sets ──
       const usedRoomSlots = new Set<string>((existing || []).map((r: any) => `${r.day_of_week}-${r.slot_id}`));
+
+      // usedTeacherSlots: รวมทุกคาบ (สอน + ประชุม) ของครูจากทุกห้อง
       const usedTeacherSlots = new Set<string>([
         ...(existing || []).filter((r: any) => r.teacher_id).map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`),
         ...(allRoomsExisting || []).filter((r: any) => r.teacher_id).map((r: any) => `${r.teacher_id}-${r.day_of_week}-${r.slot_id}`),
       ]);
+
       const usedSubjectDays = new Set<string>((existing || []).map((r: any) => `${r.subject_id}-${r.day_of_week}`));
+
       const usedClassroomSlots = new Set<string>([
         ...(allRoomsExisting || []).map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
         ...(existing || []).map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
       ]);
-      const existingSubjectCount: Record<string, number> = {};
-      for (const r of (existing || [])) existingSubjectCount[r.subject_id] = (existingSubjectCount[r.subject_id] || 0) + 1;
 
+      // นับคาบสอนจริงที่มีอยู่แล้ว (ไม่นับคาบประชุม)
+      const existingSubjectCount: Record<string, number> = {};
+      for (const r of (existing || [])) {
+        if (!r.activity_type) {
+          existingSubjectCount[r.subject_id] = (existingSubjectCount[r.subject_id] || 0) + 1;
+        }
+      }
+
+      // ── 6. นับคาบสอนต่อ (ครู, วัน) จาก existing ทั้งหมด ──
+      const teacherDayCount: Record<string, number> = {};
+      for (const r of [...(existing || []), ...(allRoomsExisting || [])]) {
+        if (r.teacher_id && !r.activity_type) {
+          const key = `${r.teacher_id}-${r.day_of_week}`;
+          teacherDayCount[key] = (teacherDayCount[key] || 0) + 1;
+        }
+      }
+
+      // ── 7. สร้าง jobs ──
       type Job = { subject_id: string; teacher_id: string | null; periods_needed: number; major_group: string; };
       const jobs: Job[] = structures.map((s: any) => ({
         subject_id: s.subject_id,
@@ -392,20 +456,41 @@ export default function ManageAssignments() {
         major_group: s.major_group || "ทั้งหมด",
       })).filter((j: Job) => j.periods_needed > 0);
 
+      // ── 8. สุ่ม slot ที่ว่าง ──
       const allSlots = days.flatMap(day => realSlotIds.map(slotId => ({ day, slotId })));
-      const shuffle = (arr: typeof allSlots) => { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; };
+      const shuffle = (arr: typeof allSlots) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      };
       let availableSlots = shuffle(allSlots.filter(s => !usedRoomSlots.has(`${s.day}-${s.slotId}`)));
 
       const toInsert: any[] = [];
       const failLog: { subject_id: string; reasons: Record<string, number> }[] = [];
 
+      // helper: นับคาบสอนของครูในวันนั้น รวม toInsert ที่กำลังจัด
+      const countTeacherOnDay = (tid: string, day: string): number => {
+        const fromExisting = teacherDayCount[`${tid}-${day}`] || 0;
+        const fromNew = toInsert.filter(r => String(r.teacher_id) === String(tid) && r.day_of_week === day).length;
+        return fromExisting + fromNew;
+      };
+
+      // ── 9. วน loop จัด slot ──
       for (const job of jobs) {
         let placed = 0;
         const newAvailable: typeof availableSlots = [];
-        const reasons: Record<string, number> = { teacherBusy: 0, subjectSameDay: 0, mathRule: 0, classroomConflict: 0 };
+        const reasons: Record<string, number> = {
+          teacherBusy: 0, subjectSameDay: 0, mathRule: 0, classroomConflict: 0, exceedsDaily: 0
+        };
+
         for (const slot of availableSlots) {
           if (placed >= job.periods_needed) { newAvailable.push(slot); continue; }
-          const teacherBusy = job.teacher_id ? usedTeacherSlots.has(`${job.teacher_id}-${slot.day}-${slot.slotId}`) : false;
+
+          const teacherBusy = job.teacher_id
+            ? usedTeacherSlots.has(`${job.teacher_id}-${slot.day}-${slot.slotId}`)
+            : false;
           const subjectSameDay = usedSubjectDays.has(`${job.subject_id}-${slot.day}`);
           const jobSubjectName = subjects.find(s => s.id === job.subject_id)?.name || "";
           const existingSlotsInDay = [
@@ -414,33 +499,55 @@ export default function ManageAssignments() {
           ].filter(r => r.slot_id !== slot.slotId);
           const violatesMathRule = wouldViolateMathAdjacentRule(jobSubjectName, slot.slotId, existingSlotsInDay);
           const classroomConflict = usedClassroomSlots.has(`${selectedRoom}-${slot.day}-${slot.slotId}`);
-          if (!teacherBusy && !subjectSameDay && !violatesMathRule && !classroomConflict) {
-            toInsert.push({ classroom_id: selectedRoom, subject_id: job.subject_id, teacher_id: job.teacher_id, day_of_week: slot.day, slot_id: slot.slotId, is_locked: false, major_group: job.major_group, academic_year: termInfo.year, semester: termInfo.semester });
-            usedRoomSlots.add(`${slot.day}-${slot.slotId}`); usedSubjectDays.add(`${job.subject_id}-${slot.day}`);
+
+          // ✅ ตรวจ max คาบ/วัน ของครู (อิงจาก course_structures)
+          const maxPerDay = job.teacher_id ? (teacherMaxPerDay[String(job.teacher_id)] ?? 4) : 99;
+          const exceedsDaily = job.teacher_id
+            ? countTeacherOnDay(String(job.teacher_id), slot.day) >= maxPerDay
+            : false;
+
+          if (!teacherBusy && !subjectSameDay && !violatesMathRule && !classroomConflict && !exceedsDaily) {
+            toInsert.push({
+              classroom_id: selectedRoom, subject_id: job.subject_id, teacher_id: job.teacher_id,
+              day_of_week: slot.day, slot_id: slot.slotId, is_locked: false,
+              major_group: job.major_group, academic_year: termInfo.year, semester: termInfo.semester
+            });
+            usedRoomSlots.add(`${slot.day}-${slot.slotId}`);
+            usedSubjectDays.add(`${job.subject_id}-${slot.day}`);
             usedClassroomSlots.add(`${selectedRoom}-${slot.day}-${slot.slotId}`);
             if (job.teacher_id) usedTeacherSlots.add(`${job.teacher_id}-${slot.day}-${slot.slotId}`);
             placed++;
           } else {
-            if (teacherBusy) reasons.teacherBusy++;
-            if (subjectSameDay) reasons.subjectSameDay++;
-            if (violatesMathRule) reasons.mathRule++;
-            if (classroomConflict) reasons.classroomConflict++;
+            if (teacherBusy)        reasons.teacherBusy++;
+            if (subjectSameDay)     reasons.subjectSameDay++;
+            if (violatesMathRule)   reasons.mathRule++;
+            if (classroomConflict)  reasons.classroomConflict++;
+            if (exceedsDaily)       reasons.exceedsDaily++;
             newAvailable.push(slot);
           }
         }
         if (placed < job.periods_needed) failLog.push({ subject_id: job.subject_id, reasons });
         availableSlots = newAvailable;
       }
-      if (toInsert.length > 0) { const { error: insertErr } = await supabase.from("teaching_assignments").insert(toInsert); if (insertErr) throw insertErr; }
+
+      // ── 10. Insert ──
+      if (toInsert.length > 0) {
+        const { error: insertErr } = await supabase.from("teaching_assignments").insert(toInsert);
+        if (insertErr) throw insertErr;
+      }
+
+      // ── 11. แจ้งถ้าจัดไม่ครบ ──
       if (failLog.length > 0) {
         const lines = failLog.map(f => {
           const subName = subjects.find(s => s.id === f.subject_id)?.name || f.subject_id;
           const subCode = subjects.find(s => s.id === f.subject_id)?.code || "";
           const r = f.reasons; const why: string[] = [];
-          if (r.teacherBusy > 0) why.push(`ครูติดคาบอื่น ${r.teacherBusy} คาบ`);
-          if (r.subjectSameDay > 0) why.push(`วิชาซ้ำวัน ${r.subjectSameDay} คาบ`);
-          if (r.mathRule > 0) why.push(`กฎคณิตติดกัน ${r.mathRule} คาบ`);
+          const tid = jobs.find(j => j.subject_id === f.subject_id)?.teacher_id;
+          if (r.teacherBusy > 0)       why.push(`ครูติดคาบอื่น ${r.teacherBusy} คาบ`);
+          if (r.subjectSameDay > 0)    why.push(`วิชาซ้ำวัน ${r.subjectSameDay} คาบ`);
+          if (r.mathRule > 0)          why.push(`กฎคณิตติดกัน ${r.mathRule} คาบ`);
           if (r.classroomConflict > 0) why.push(`ห้องมีครูอื่นสอนแล้ว ${r.classroomConflict} คาบ`);
+          if (r.exceedsDaily > 0)      why.push(`ครูสอนเกิน ${tid ? (teacherMaxPerDay[String(tid)] ?? 4) : 4} คาบ/วัน (${r.exceedsDaily} slot ถูกข้าม)`);
           return `• ${subCode} ${subName}: ${why.join(", ") || "ไม่มีช่วงว่างพอ"}`;
         });
         alert(`⚠️ จัดตารางไม่ครบ ${failLog.length} วิชา:\n\n${lines.join("\n")}`);
