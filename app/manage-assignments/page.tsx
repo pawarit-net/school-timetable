@@ -219,7 +219,7 @@ export default function ManageAssignments() {
           .eq("classroom_id", room).eq("academic_year", yr).eq("semester", sem),
         supabase.from("course_structures")
           .select(`*, course_teachers(teacher_id)`)
-          .eq("classroom_id", room).eq("academic_year", yr).eq("term", sem)
+          .eq("classroom_id", room).eq("academic_year", yr).eq("term", String(sem))
       ]);
       if (assignRes.data) setScheduleData(assignRes.data as ScheduleItem[]);
       if (structRes.data) setCourseStructures(structRes.data);
@@ -362,9 +362,10 @@ export default function ManageAssignments() {
         const teacherInfo = teachers.find(t => t.id === teacherId);
         const needed = s.periods_per_week || 1;
         // นับ unique คาบ (day+slot) ไม่นับซ้ำกรณีมีหลายครูในคาบเดียวกัน
+        // เปรียบเทียบแบบ string เพื่อป้องกัน type mismatch (string vs number)
         const uniqueSlots = new Set(
           scheduleData
-            .filter(a => a.subject_id === s.subject_id && !a.activity_type)
+            .filter(a => String(a.subject_id) === String(s.subject_id) && !a.activity_type)
             .map(a => `${a.day_of_week}-${a.slot_id}`)
         );
         const placed = uniqueSlots.size;
