@@ -84,6 +84,7 @@ interface ScheduleItem {
   id?: number; classroom_id?: string; day_of_week: string; slot_id: number;
   subject_id: string; teacher_id?: string; is_locked?: boolean;
   academic_year?: string; semester?: string; major_group?: string;
+  activity_type?: string; note?: string;
   subjects?: { code: string; name: string };
   teachers?: { full_name: string; department: string };
 }
