@@ -360,7 +360,13 @@ export default function ManageAssignments() {
         const teacherId = s.course_teachers?.[0]?.teacher_id || null;
         const teacherInfo = teachers.find(t => t.id === teacherId);
         const needed = s.periods_per_week || 1;
-        const placed = scheduleData.filter(a => a.subject_id === s.subject_id).length;
+        // นับ unique คาบ (day+slot) ไม่นับซ้ำกรณีมีหลายครูในคาบเดียวกัน
+        const uniqueSlots = new Set(
+          scheduleData
+            .filter(a => a.subject_id === s.subject_id && !a.activity_type)
+            .map(a => `${a.day_of_week}-${a.slot_id}`)
+        );
+        const placed = uniqueSlots.size;
         return { subject_id: s.subject_id, subject_code: subjectInfo?.code || "-", subject_name: subjectInfo?.name || s.subject_id, teacher_name: teacherInfo?.full_name || "-", needed, placed };
       }).sort((a: any, b: any) => a.subject_code.localeCompare(b.subject_code))
     : null;
@@ -430,12 +436,17 @@ export default function ManageAssignments() {
         ...(existing || []).map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
       ]);
 
-      // นับคาบสอนจริงที่มีอยู่แล้ว (ไม่นับคาบประชุม)
-      const existingSubjectCount: Record<string, number> = {};
+      // นับ unique คาบสอน (day+slot) ของแต่ละวิชา ไม่นับซ้ำกรณี multi-teacher
+      const existingSubjectSlots: Record<string, Set<string>> = {};
       for (const r of (existing || [])) {
         if (!r.activity_type) {
-          existingSubjectCount[r.subject_id] = (existingSubjectCount[r.subject_id] || 0) + 1;
+          if (!existingSubjectSlots[r.subject_id]) existingSubjectSlots[r.subject_id] = new Set();
+          existingSubjectSlots[r.subject_id].add(`${r.day_of_week}-${r.slot_id}`);
         }
+      }
+      const existingSubjectCount: Record<string, number> = {};
+      for (const [subId, slots] of Object.entries(existingSubjectSlots)) {
+        existingSubjectCount[subId] = slots.size;
       }
 
       // ── 6. นับคาบสอนต่อ (ครู, วัน) จาก existing ทั้งหมด ──
