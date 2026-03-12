@@ -485,7 +485,7 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
 
       const { data: existing } = await supabase
         .from("teaching_assignments")
-        .select("day_of_week, slot_id, teacher_id, subject_id")
+        .select("day_of_week, slot_id, teacher_id, subject_id, is_locked")
         .eq("classroom_id", selectedRoom)
         .eq("academic_year", termInfo.year)
         .eq("semester", termInfo.semester);
@@ -523,9 +523,13 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
           .map((r: any) => `${r.classroom_id}-${r.day_of_week}-${r.slot_id}`),
       ]);
 
-      const existingSubjectCount: Record<string, number> = {};
+      const existingSubjectSlots: Record<string, Set<string>> = {};
+      const lockedSubjects = new Set<string>();
       for (const r of (existing || [])) {
-        existingSubjectCount[r.subject_id] = (existingSubjectCount[r.subject_id] || 0) + 1;
+        const subjectKey = String(r.subject_id);
+        if (!existingSubjectSlots[subjectKey]) existingSubjectSlots[subjectKey] = new Set<string>();
+        existingSubjectSlots[subjectKey].add(`${r.day_of_week}-${r.slot_id}`);
+        if (r.is_locked) lockedSubjects.add(subjectKey);
       }
 
       type Job = {
@@ -537,8 +541,12 @@ ${warnings.map((w,i) => `${i+1}. ${w}`).join('')}
 
       const jobs: Job[] = structures
         .map((s: any) => {
-          const alreadyPlaced = existingSubjectCount[s.subject_id] || 0;
-          const needed = Math.max(0, (s.periods_per_week || 1) - alreadyPlaced);
+          const subjectKey = String(s.subject_id);
+          const alreadyPlaced = existingSubjectSlots[subjectKey]?.size || 0;
+          const hasLockedAssignment = lockedSubjects.has(subjectKey);
+          const needed = hasLockedAssignment
+            ? 0
+            : Math.max(0, (s.periods_per_week || 1) - alreadyPlaced);
           return {
             subject_id: s.subject_id,
             teacher_id: s.course_teachers?.[0]?.teacher_id || null,
